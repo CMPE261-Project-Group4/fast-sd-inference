@@ -1,0 +1,7 @@
+# Original inference configuration (SD1.5 defaults).
+base: configs/base.yaml
+runs:
+  - name: baseline
+  # Throughput reference at a larger batch size.
+  - name: baseline_bs4
+    batch_size: 4

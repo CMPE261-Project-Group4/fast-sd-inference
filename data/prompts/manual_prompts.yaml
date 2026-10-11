@@ -1,0 +1,39 @@
+# Hand-designed prompts, grouped by category. Extend freely, then re-run
+# scripts/prepare_prompts.py and commit the regenerated eval_prompts.jsonl.
+
+objects:
+  - a red vintage bicycle leaning against a brick wall
+  - a glass bowl filled with lemons on a wooden table
+  - a stack of old leather-bound books with a brass candle holder
+  - a ceramic teapot with blue floral patterns, studio lighting
+
+people:
+  - a portrait of an elderly fisherman with a weathered face, natural light
+  - a young woman reading a book in a sunlit cafe
+  - a group of children playing soccer on a dirt field at sunset
+  - a chef plating a dessert in a busy restaurant kitchen
+
+animals:
+  - a golden retriever puppy running through autumn leaves
+  - a red fox standing in fresh snow, wildlife photography
+  - a flock of flamingos wading in shallow turquoise water
+
+environments:
+  - a misty pine forest at dawn with sun rays through the trees
+  - a narrow street in an old European town after rain at night
+  - a futuristic city skyline with flying vehicles at dusk
+  - a cozy cabin interior with a fireplace and snow outside the window
+  - a desert canyon with layered red rock formations under a clear sky
+
+styles:
+  - a lighthouse on a cliff, oil painting in the style of impressionism
+  - a samurai standing in a bamboo forest, ukiyo-e woodblock print
+  - a mountain village, watercolor illustration
+  - a robot watering plants, pixel art
+  - a cat wearing a crown, highly detailed digital art
+  - a city street, black and white film photograph, 1950s
+
+text_and_composition:
+  - three apples and two oranges arranged in a row
+  - a blue cube on top of a red sphere
+  - a sign that says "OPEN" hanging on a shop door

@@ -1,0 +1,5 @@
+# Mixed precision (default scheduler, 50 steps).
+base: configs/base.yaml
+runs:
+  - {name: fp16, dtype: fp16}
+  - {name: fp16_bs4, dtype: fp16, batch_size: 4}

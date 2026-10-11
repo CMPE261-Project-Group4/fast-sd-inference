@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Experiment outputs & large files
+results/*
+!results/.gitkeep
+*.ckpt
+*.safetensors
+*.pt
+*.bin
+data/coco/
+logs/
+slurm-*.out
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fast-sd-inference"
+version = "0.1.0"
+description = "Efficient latent diffusion inference: speed/memory vs. quality trade-offs"
+requires-python = ">=3.10"
+# torch / torchvision are installed separately to match the CUDA version (see README).
+dependencies = [
+    "diffusers>=0.30",
+    "transformers>=4.44",
+    "accelerate>=0.33",
+    "safetensors",
+    "DeepCache>=0.1.1",
+    "torchmetrics[image,multimodal]>=1.4",
+    "torch-fidelity",
+    "lpips",
+    "pyyaml",
+    "pandas",
+    "matplotlib",
+    "pillow",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "jupyter"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

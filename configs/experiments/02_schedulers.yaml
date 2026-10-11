@@ -1,0 +1,10 @@
+# Alternative samplers at a reduced and at the full step budget (FP32).
+base: configs/base.yaml
+runs:
+  - {name: ddim_20,     scheduler: ddim,     num_inference_steps: 20}
+  - {name: ddim_50,     scheduler: ddim,     num_inference_steps: 50}
+  - {name: dpmpp_20,    scheduler: dpmpp_2m, num_inference_steps: 20}
+  - {name: dpmpp_50,    scheduler: dpmpp_2m, num_inference_steps: 50}
+  - {name: euler_20,    scheduler: euler,    num_inference_steps: 20}
+  - {name: euler_50,    scheduler: euler,    num_inference_steps: 50}
+  - {name: pndm_20,     scheduler: pndm,     num_inference_steps: 20}

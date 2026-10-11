@@ -1,0 +1,6 @@
+# DeepCache feature caching (default scheduler, 50 steps, FP32).
+base: configs/base.yaml
+runs:
+  - {name: deepcache_i2, deepcache: {enabled: true, cache_interval: 2}}
+  - {name: deepcache_i3, deepcache: {enabled: true, cache_interval: 3}}
+  - {name: deepcache_i5, deepcache: {enabled: true, cache_interval: 5}}

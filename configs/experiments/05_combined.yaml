@@ -1,0 +1,26 @@
+# Combined optimizations + leave-one-out ablation.
+# TODO: update scheduler / steps / interval after reviewing results of 01-04.
+base: configs/base.yaml
+runs:
+  - name: combined_all
+    dtype: fp16
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+    deepcache: {enabled: true, cache_interval: 3}
+  - name: combined_no_fp16
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+    deepcache: {enabled: true, cache_interval: 3}
+  - name: combined_no_scheduler        # default scheduler, 50 steps
+    dtype: fp16
+    deepcache: {enabled: true, cache_interval: 3}
+  - name: combined_no_deepcache
+    dtype: fp16
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+  - name: combined_all_bs4
+    dtype: fp16
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+    deepcache: {enabled: true, cache_interval: 3}
+    batch_size: 4

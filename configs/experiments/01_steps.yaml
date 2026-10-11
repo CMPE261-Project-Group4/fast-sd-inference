@@ -1,0 +1,7 @@
+# Effect of the number of denoising steps (default scheduler, FP32).
+base: configs/base.yaml
+runs:
+  - {name: steps_10, num_inference_steps: 10}
+  - {name: steps_20, num_inference_steps: 20}
+  - {name: steps_30, num_inference_steps: 30}
+  # steps_50 == baseline
