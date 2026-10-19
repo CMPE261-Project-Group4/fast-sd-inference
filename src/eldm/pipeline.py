@@ -44,6 +44,7 @@ def build_pipeline(cfg: dict[str, Any]):
 
     pipe = StableDiffusionPipeline.from_pretrained(
         cfg["model_id"],
+        revision=cfg.get("model_revision"),  # pinned commit: the offline cache holds only this one
         torch_dtype=dtype,
         safety_checker=None,          # avoid black images skewing quality metrics
         requires_safety_checker=False,
