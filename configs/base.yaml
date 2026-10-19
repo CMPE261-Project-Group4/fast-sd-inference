@@ -1,6 +1,7 @@
 # Baseline inference configuration. Experiment files override individual keys.
 
 model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
+model_revision: 451f4fe16113bff5a5d2269ed5ad43b0592e9a14   # pinned commit; must match eldm.assets.HF["sd15"]
 device: auto            # auto | cuda | mps | cpu
 dtype: fp32             # fp32 | fp16
 
