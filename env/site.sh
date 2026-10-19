@@ -33,8 +33,12 @@ export HF_DATASETS_OFFLINE=1
 export HF_HUB_DISABLE_TELEMETRY=1
 
 # Use only the venv: no ~/.local packages, and this clone's src/ on the path, so each
-# teammate's clone runs its own code against the one shared venv.
+# teammate's clone runs its own code against the one shared venv. PYTHONPATH is set,
+# not appended to: sbatch copies the submitting shell's environment into the job, and
+# a loaded python3 module puts its own site-packages (accelerate, ...) on PYTHONPATH,
+# ahead of the venv.
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="${ELDM_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${ELDM_ROOT}/src"
+unset PYTHONHOME
 export VIRTUAL_ENV="${ELDM_VENV}"
 export PATH="${ELDM_VENV}/bin:${PATH}"
