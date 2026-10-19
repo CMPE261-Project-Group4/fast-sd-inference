@@ -8,7 +8,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | Phase | Branch | Gate | Result |
 |---|---|---|---|
 | 0 Orient | `hpc/p0-orient` | ssh without a prompt, `a100` GRES, `group4/` writable | **pass** (2026-10-18) |
-| 1 Portable environment | `hpc/p1-env` | imports pass on both clusters, clean env | not started |
+| 1 Portable environment | `hpc/p1-env` | imports pass on both clusters, clean env | **pass** (2026-10-19, job 92197) |
 | 2 Offline assets | `hpc/p2-assets` | everything loads on HPC3 offline | not started |
 | 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | not started |
 | 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | not started |
@@ -22,7 +22,47 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 
 | Date | Job ID | Purpose | Node | Result |
 |---|---|---|---|---|
-| | | none yet | | |
+| 2026-10-19 | 92197 | P1.1 clean-environment import check (`check_env.sbatch`, defq, 2 CPUs) | c19 | COMPLETED 0:0 in 36 s, MaxRSS 651 MB; all checks passed |
+
+## Phase 1: Portable environment, R1 (2026-10-19)
+
+### Gate: pass
+
+The same check, `scripts/hpc/check_env.sbatch`, ran in a clean environment (`env -i`, no modules, only `env/site.sh`) on both clusters:
+- **coe-hpc1:** `bash scripts/hpc/check_env.sbatch` passed all checks (CentOS 7.9, glibc 2.17, 48 s).
+- **COE-HPC3:** job 92197 on c19 passed all checks (Rocky 9.8, glibc 2.34, 36 s). It ran at commit 996f2da plus this commit's `check_env.sbatch`.
+
+The checks:
+- the venv's interpreter is the portable CPython 3.11.16;
+- `pip check` is clean, and `pip freeze` equals `requirements.lock`;
+- torch, torchvision, diffusers, transformers, accelerate, huggingface_hub, safetensors, DeepCache, torchmetrics, torch_fidelity, lpips, open_clip, numpy, scipy, PIL, pandas, matplotlib and yaml import;
+- the project's own classes import: the SD pipeline, the four schedulers, `DeepCacheSDHelper`, CLIPScore, FID, KID, LPIPS, open_clip, and `eldm.*`;
+- a CPU matmul runs;
+- the offline flags are set.
+
+### Commits
+
+- `922065f build(env): pin portable Python and Python dependencies`
+- `3934e0b build(hpc): add idempotent setup_env.sh and env/site.sh`
+- `996f2da fix(hpc): reset PYTHONPATH and PYTHONHOME in env/site.sh`, an extra commit (see the decisions below)
+- `test(hpc): add clean-environment import check job`: this commit
+
+### What was built
+
+- `/data/cmpe261-fa26/group4/env/python`: CPython 3.11.16 (python-build-standalone 20260924, sha256-checked), 112 MB, needs only glibc 2.17.
+- `/data/cmpe261-fa26/group4/env/venv`: 83 packages from `requirements.lock`, 4.5 GB. The pip cache in `cache/pip` takes 2.9 GB.
+- `setup_env.sh` built both in 5m42s under `env -i`. A second run took 0.03 s and changed 0 files.
+- The lock check (`pip install --only-binary=:all: -r requirements.lock` into a fresh venv) took 3 min on coe-hpc1, and its freeze equals the lock.
+
+### Decisions
+
+- **Torch comes from PyPI** (correction 9). It's the same CUDA 12.4 build as the cu124 index, so the lock has no `+cu124` local versions and no extra index. The manylinux_2_28 fallback in PLAN.md wasn't needed: every wheel installs on glibc 2.17.
+- **We keep the portable CPython.** Dan asked for a fact check, and no module Python works on both clusters (measured 2026-10-19):
+  - **coe-hpc1 module `python3/3.11.5`** is on coe-hpc1's local `/opt/ohpc/pub`. On HPC3 that path is a different NFS tree, and the directory is `Permission denied`.
+  - **HPC3 module `python3/3.11.7`** actually runs the system Python 3.11.13 (`/lib64/libpython3.11.so`). It also puts a shared site-packages on `PYTHONPATH` (accelerate, aiohttp, albumentations, …).
+  - **HPC3 module `python3/3.12.12`** and the system `/usr/bin/python3.11` (RPM 3.11.13-10.el9_8) don't exist on coe-hpc1 and need glibc 2.34.
+  - **Building on HPC3** would mean staging wheels for its platform, building the venv offline in a job, using `module load` in jobs, and keeping a second venv on coe-hpc1 for pytest and downloads.
+- **`site.sh` now sets `PYTHONPATH` instead of appending to it, and unsets `PYTHONHOME`** (996f2da). sbatch exports the submitting shell's environment. After a `module load python3/3.11.7` on g17, that module's packages would shadow the venv in every job. Tested: with a fake `accelerate` on the inherited `PYTHONPATH`, the old `site.sh` imported the fake, and the new one imports 1.15.0 from the venv. g17 login shells load no modules today.
 
 ## Phase 0: Orient (2026-10-18)
 
@@ -103,10 +143,20 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
 
 - Git identity: `Dan Lam <dan.lam@sjsu.edu>`, repo-local.
 - PLAN.md is kept verbatim; corrections live in this log.
-- Planned: CPython 3.11.16 (PBS 20260924), torch 2.6.0 (CUDA 12.4), diffusers 0.41.0. The exact pins come in Phase 1.
-- A100 driver: 590.44.01.
+- **Environment** (Phase 1, `requirements.lock`):
+  - CPython 3.11.16 (PBS 20260924);
+  - torch 2.6.0+cu124 (CUDA 12.4, cuDNN 9.1.0), torchvision 0.21.0;
+  - diffusers 0.41.0, transformers 5.20.1, accelerate 1.15.0, huggingface_hub 1.33.0;
+  - DeepCache 0.1.1;
+  - torchmetrics 1.9.0, torch-fidelity 0.4.0, lpips 0.1.4, open_clip_torch 3.3.0;
+  - numpy 2.2.6.
+- **Portable CPython over module Pythons** (see Phase 1 decisions).
+- **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
 
 ## Open issues
 
 - **The whole class is in the group.** `cmpe261-fa26` has 19 members, so every classmate can write to and delete from `group4/`. There's no team-only group. Locking finished data with `chmod -R a-w` is the only guard. Dan could ask the admins for a team group.
+- **CPU threads aren't limited to the allocation (Phase 3 onward).** In job 92197 (`-c 2`), torch picked 28 threads, all of c19's physical cores. This fits correction 2: cgroups don't confine the job. Job scripts should set `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK`, so we don't oversubscribe a shared node and add noise to the timings.
+- **transformers 5.x with torchmetrics' CLIPScore.** It imports fine; whether it actually runs is checked in Phase 2 (fallback: `transformers<5`).
+- **coe-hpc1 has an old NVIDIA driver (CUDA 10.1).** torch prints a harmless warning there when it probes CUDA. We never use a GPU on coe-hpc1.
 - **NFE with DeepCache (Phase 5, needs Dan's decision).** DeepCache's cached steps still call `unet.forward` and skip only the inner blocks. A UNet forward hook would therefore count the same NFE as the baseline. Proposal: count full and partial passes separately, for example with a hook on `unet.mid_block`.
