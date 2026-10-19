@@ -1,0 +1,37 @@
+# Top-level dependencies of the shared HPC venv (/data/cmpe261-fa26/group4/env/venv).
+#
+# requirements.lock is `pip freeze --exclude-editable` of a venv built from this file
+# on coe-hpc1 with `pip install --only-binary=:all:`, so every wheel also runs on
+# glibc 2.17. Install from the lock, not from this file.
+#
+# Pins are exact on purpose. torch 2.6.0 is the last release with glibc 2.17 wheels
+# (2.7+ is manylinux_2_28 only), and diffusers/transformers already require
+# torch>=2.6, so any newer release could demand a torch that cannot install here.
+# torch from PyPI is the CUDA 12.4 build (the same as the cu124 index), so the lock
+# needs no extra index.
+
+# PyTorch, CUDA 12.4 build
+torch==2.6.0
+torchvision==0.21.0
+
+# Stable Diffusion pipeline and DeepCache
+diffusers==0.41.0
+transformers==5.20.1
+accelerate==1.15.0
+huggingface_hub==1.33.0
+safetensors==0.8.0
+DeepCache==0.1.1
+
+# Quality metrics
+torchmetrics[image,multimodal]==1.9.0
+torch-fidelity==0.4.0
+lpips==0.1.4
+open_clip_torch==3.3.0
+
+# Analysis, I/O and tests
+pyyaml
+pandas
+matplotlib
+pillow
+tqdm
+pytest
