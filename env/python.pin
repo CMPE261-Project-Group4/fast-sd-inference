@@ -1,0 +1,10 @@
+# Portable CPython for the shared venv (valid shell: scripts/hpc/setup_env.sh sources it).
+#
+# python-build-standalone builds need only glibc >= 2.17, so a venv made from this
+# interpreter on coe-hpc1 (CentOS 7) also runs in COE-HPC3 jobs (Rocky 9). Same pin
+# as AFAR_HPC. Change all four together; the venv is rebuilt automatically.
+#   https://github.com/astral-sh/python-build-standalone/releases/tag/20260924
+PYTHON_VERSION=3.11.16
+PBS_RELEASE=20260924
+PBS_URL=https://github.com/astral-sh/python-build-standalone/releases/download/20260924/cpython-3.11.16%2B20260924-x86_64-unknown-linux-gnu-install_only.tar.gz
+PBS_SHA256=49a52eb189878431a36efd137e7cd08f6429e59dc049b9cfb030bf706eb33fd4
