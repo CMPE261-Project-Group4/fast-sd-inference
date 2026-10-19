@@ -9,7 +9,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 |---|---|---|---|
 | 0 Orient | `hpc/p0-orient` | ssh without a prompt, `a100` GRES, `group4/` writable | **pass** (2026-10-18) |
 | 1 Portable environment | `hpc/p1-env` | imports pass on both clusters, clean env | **pass** (2026-10-19, job 92197) |
-| 2 Offline assets | `hpc/p2-assets` | everything loads on HPC3 offline | not started |
+| 2 Offline assets | `hpc/p2-assets` | everything loads on HPC3 offline | **pass** (2026-10-19, job 92251; job 92223 failed first) |
 | 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | not started |
 | 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | not started |
 | 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | not started |
@@ -23,6 +23,74 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | Date | Job ID | Purpose | Node | Result |
 |---|---|---|---|---|
 | 2026-10-19 | 92197 | P1.1 clean-environment import check (`check_env.sbatch`, defq, 2 CPUs) | c19 | COMPLETED 0:0 in 36 s, MaxRSS 651 MB; all checks passed |
+| 2026-10-19 | 92223 | P2.1 offline asset check (`check_assets.sbatch --full`, defq, 2 CPUs, 24G) | c19 | FAILED 1:0 in 1m54s, MaxRSS 2.6 GB; 16 of 17 checks passed. CLIP ViT-L/14 failed: torchmetrics CLIPScore doesn't work with transformers 5 (see open issues) |
+| 2026-10-19 | 92251 | P2.2 offline asset check, rerun with the CLIPScore adapter | c19 | COMPLETED 0:0 in 1m25s, MaxRSS 2.35 GB (sampled); all 17 checks passed |
+
+## Phase 2: Offline assets, R2 and part of D2 (2026-10-19)
+
+### Gate: pass
+
+Job 92251 on c19 ran `scripts/hpc/check_assets.py --full`. It ran in a clean environment (`env -i` plus `env/site.sh`), on 2 threads, with socket connections blocked and the offline flags set. Every model, metric and dataset file loaded:
+
+| Check | Result |
+|---|---|
+| Hash pins | Every pinned file was re-hashed and matches: SD1.5 13 files, CLIP-L 8 files, ViT-g 2 files, 11.45 GB in total. `data/CHECKSUMS.txt` matches too. |
+| Datasets | COCO has 5,000 images and 25,014 captions, PartiPrompts has 1,632 prompts, and both are read-only. 5 JPEGs decode. |
+| SD1.5 | It loads through `eldm.pipeline.build_pipeline` at `451f4fe` on CPU. All 5 schedulers construct. The text encoder, UNet and VAE forward passes are finite and correctly shaped, and DeepCache attaches. |
+| CLIP ViT-L/14 | Through the adapter, CLIPScore gives 20.45 with an image's own caption and 7.66 with a mismatched one. The by-hand value is also 20.45. |
+| OpenCLIP ViT-g/14 | Loaded from the pinned safetensors, its cosine score is 17.8 with the own caption and −6.0 with a mismatched one. |
+| FID, KID, LPIPS | 67.5, 0.0331 and 0.116 on fixed tiny inputs, the same values as on coe-hpc1. |
+
+The same inputs gave the same numbers on coe-hpc1 and on HPC3, so both clusters see the same assets and the same environment.
+
+Job 92223, the first attempt, failed only on CLIP-L, because torchmetrics' CLIPScore doesn't work with transformers 5. The fix is an adapter in the check (Dan's decision, 2026-10-19); see the open issues.
+
+### Commits
+
+- `155bfd4 feat(assets): pin external assets in one manifest`, an extra commit: `src/eldm/assets.py` is the single source of the pins.
+- `8e94224 feat(hpc): prefetch model and metric weights for offline jobs`
+- `4c7e66c feat(pipeline): load SD1.5 at the pinned revision`, an extra commit: without it, Phase 3 can't load offline.
+- `dca6d18 data: add dataset fetch script and checksums`
+- `test(hpc): add offline asset load check job`: this commit. It adds `scripts/hpc/check_assets.py`, the payload, which PLAN.md doesn't list, and `scripts/hpc/check_assets.sbatch`.
+
+Two commit messages state the wrong test count, because I wrote them before reading pytest's output. History isn't rewritten:
+- `155bfd4` says "15 passed"; the actual count was 18.
+- `8e94224` says "21 passed"; the actual count was 22.
+
+### Assets (all under `/data/cmpe261-fa26/group4`, verified on coe-hpc1 2026-10-19)
+
+| Asset | Pinned at | Files | Size | Verified against |
+|---|---|---|---|---|
+| SD1.5 `stable-diffusion-v1-5/stable-diffusion-v1-5` | `451f4fe` | 13 (safetensors + configs) | 4.27 GB | the Hub's LFS sha256 or git blob id, and per-file sha256 pins in `eldm.assets` |
+| CLIP ViT-L/14 `openai/clip-vit-large-patch14` | `32bd642` | 8 | 1.71 GB | the same |
+| OpenCLIP ViT-g/14 `laion/CLIP-ViT-g-14-laion2B-s34B-b88K` | `a20bc45` | 2 | 5.47 GB | the same |
+| Inception (FID/KID) `weights-inception-2015-12-05-6726825d.pth` | torch-fidelity v0.2.0 URL | 1 | 0.10 GB | sha256 `6726825d…b2`, matching the filename prefix |
+| AlexNet (LPIPS) `alexnet-owt-7be5be79.pth` | download.pytorch.org URL | 1 | 0.24 GB | sha256 `7be5be79…02`, matching the filename prefix |
+| COCO 2017 `val2017.zip`, images extracted | images.cocodataset.org (HTTP only) | 5,000 images | 0.82 GB zip | S3 multipart ETag `d366be60…-98`, plus `data/CHECKSUMS.txt` |
+| COCO `annotations_trainval2017.zip`, `captions_val2017.json` extracted | the same | 25,014 captions | 0.25 GB zip | ETag (MD5) `f4bbac64…`, plus `data/CHECKSUMS.txt` |
+| PartiPrompts `PartiPrompts.tsv` | google-research/parti `5a65797` | 1,632 prompts | 0.1 MB | git blob `f96e7125…`, plus `data/CHECKSUMS.txt` |
+
+Disk use: `hf_cache` 11 GB, `cache/torch` 0.3 GB, `datasets` 1.8 GB (read-only).
+
+How long each script takes on coe-hpc1:
+
+| Script | First run | Rerun |
+|---|---|---|
+| `prefetch_assets.py` | about 3 min (download) | 56 s (verify only) |
+| `prefetch_assets.py --verify-only` | | 53 s |
+| `fetch_datasets.sh` | 1m39s | 14 s |
+| `check_assets.py --quick` | | 11 s |
+
+### Findings
+
+- **Hugging Face cache blob names aren't sha256.** Xet-backed repos name their blobs by Xet hash; for example, SD1.5's `text_encoder/model.safetensors` is in blob `4e7380d2…`, while its sha256 is `d008943c…`. So files are verified against the Hub's published LFS sha256 and git blob ids, and pinned per file in `eldm.assets`. The cache itself isn't trusted.
+- **hf_xet's leftover cache** in `$HF_HOME/xet` is empty (0.00 GB). Deleting it while the downloading process is still running fails on NFS, because that process holds its log files open. The prefetch script now only reports its size.
+- **COCO serves no HTTPS.** Integrity comes from the pinned ETags, including the multipart ETag reproduced from 8 MiB parts.
+- **The `-c 2` thread fix works.** Job 92223 ran torch on 2 threads, because the sbatch sets `OMP_NUM_THREADS` from `SLURM_CPUS_PER_TASK`.
+- **SD1.5 loads offline on HPC3 at the pinned revision.**
+  - The attention processor is `AttnProcessor2_0` (SDPA).
+  - diffusers warns that `torch_dtype` is deprecated in favour of `dtype` (removal in 1.0). That's for Phase 5's `pipeline.py` changes.
+- **Memory.** The check job requests `--mem=24G`. sacct reported MaxRSS of 2.6 GB (job 92223) and 2.35 GB (job 92251). sacct samples memory periodically, so it can miss the short peak while open_clip loads ViT-g (model plus state dict, about 11 GB by size). For a 2-minute CPU job the 24G headroom is kept.
 
 ## Phase 1: Portable environment, R1 (2026-10-19)
 
@@ -151,12 +219,27 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
   - torchmetrics 1.9.0, torch-fidelity 0.4.0, lpips 0.1.4, open_clip_torch 3.3.0;
   - numpy 2.2.6.
 - **Portable CPython over module Pythons** (see Phase 1 decisions).
+- **Assets** (Phase 2): every model and metric weight is pinned in `src/eldm/assets.py`: repo, commit, allow-list and per-file sha256. Dataset checksums are in `data/CHECKSUMS.txt`.
+  - Loaders must use the pinned snapshot, because no `refs/main` is cached:
+    - diffusers takes `revision=model_revision`;
+    - CLIP-L uses a callable loader with the transformers 5 adapter;
+    - open_clip takes the local safetensors path.
+  - Scripts: `prefetch_assets.py` and `fetch_datasets.sh` run on coe-hpc1; `check_assets.sbatch` is the HPC3 gate.
+- **Versions are unchanged** despite the CLIPScore incompatibility (Dan, 2026-10-19). An adapter is used instead of `transformers<5`.
 - **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
 
 ## Open issues
 
 - **The whole class is in the group.** `cmpe261-fa26` has 19 members, so every classmate can write to and delete from `group4/`. There's no team-only group. Locking finished data with `chmod -R a-w` is the only guard. Dan could ask the admins for a team group.
 - **CPU threads aren't limited to the allocation (Phase 3 onward).** In job 92197 (`-c 2`), torch picked 28 threads, all of c19's physical cores. This fits correction 2: cgroups don't confine the job. Job scripts should set `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK`, so we don't oversubscribe a shared node and add noise to the timings.
-- **transformers 5.x with torchmetrics' CLIPScore.** It imports fine; whether it actually runs is checked in Phase 2 (fallback: `transformers<5`).
+- **torchmetrics' CLIPScore doesn't work with transformers 5 (found by job 92223; needs Dan's OK in Phase 5).**
+  - **The cause:** in transformers 5.20.1, `CLIPModel.get_image_features` and `get_text_features` return a `BaseModelOutputWithPooling`, with the projected embedding in `.pooler_output`. transformers 4.x returned the tensor itself. torchmetrics 1.9.0 calls `.norm()` on the result and fails with `AttributeError: 'BaseModelOutputWithPooling' object has no attribute 'norm'`.
+  - **No fix exists upstream.** 1.9.0 (2026-03-09) is the latest torchmetrics release.
+  - **Downgrading is costly.** The last transformers 4.x release (4.57.6) needs `huggingface_hub<1.0`, but diffusers 0.41 needs `>=1.32`. So `transformers<5` would also downgrade diffusers, mean rebuilding the venv, and redo the Phase 1 gate.
+  - **Decision (Dan, 2026-10-19): keep the package versions and use an adapter.**
+    - The adapter is a `CLIPModel` subclass whose `get_image_features` and `get_text_features` return `.pooler_output`. It's passed to CLIPScore through its callable loader, with the model loaded from the pinned snapshot.
+    - The CLIP-L check in `check_assets.py` uses it. On coe-hpc1, offline, it gives 20.45 with an image's own caption versus 7.66 with another caption.
+    - A score computed by hand, `100 * max(cos, 0)`, also gives 20.45, so the metric's definition doesn't change.
+  - **Proposed for Phase 5:** use the same adapter in `src/eldm/metrics.py`, or compute the per-image score by hand, which `quality_per_image.csv` needs anyway. Dan confirms which in Phase 5.
 - **coe-hpc1 has an old NVIDIA driver (CUDA 10.1).** torch prints a harmless warning there when it probes CUDA. We never use a GPU on coe-hpc1.
 - **NFE with DeepCache (Phase 5, needs Dan's decision).** DeepCache's cached steps still call `unet.forward` and skip only the inner blocks. A UNet forward hook would therefore count the same NFE as the baseline. Proposal: count full and partial passes separately, for example with a hook on `unet.mid_block`.
