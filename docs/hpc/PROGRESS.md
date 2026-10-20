@@ -1,5 +1,8 @@
 # HPC progress log
 
+New here? Start with [README.md](README.md) (overview, plan, current state, next steps) and
+[DEVELOPMENT.md](DEVELOPMENT.md) (how to work on it). This file is the detailed log.
+
 The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 [Corrections to PLAN.md](#corrections-to-planmd-measured-2026-10-18) differ from PLAN.md, follow the corrections.
 
@@ -51,7 +54,13 @@ Job 92223, the first attempt, failed only on CLIP-L, because torchmetrics' CLIPS
 - `8e94224 feat(hpc): prefetch model and metric weights for offline jobs`
 - `4c7e66c feat(pipeline): load SD1.5 at the pinned revision`, an extra commit: without it, Phase 3 can't load offline.
 - `dca6d18 data: add dataset fetch script and checksums`
-- `test(hpc): add offline asset load check job`: this commit. It adds `scripts/hpc/check_assets.py`, the payload, which PLAN.md doesn't list, and `scripts/hpc/check_assets.sbatch`.
+- `9619f8a test(hpc): add offline asset load check job`. It adds `scripts/hpc/check_assets.py`, the payload, which PLAN.md doesn't list, and `scripts/hpc/check_assets.sbatch`.
+
+After the gate, two commits make the work usable by teammates:
+- `a4ffae1 fix(hpc): run check jobs from the submitting clone`. It also commits `logs/.gitkeep` and the `.gitignore` change, which PLAN.md had placed in Phase 3's first commit; Phase 3 keeps the `run_gpu.slurm` rework.
+  - Tested on coe-hpc1: under `bash`, as a simulated Slurm spool copy, and from a fresh separate clone. That clone's own `src/` was used with the shared venv.
+  - Not yet run as a real Slurm job; the next submitted check will confirm it.
+- `docs(hpc): add HPC overview and development guide`: [README.md](README.md) and [DEVELOPMENT.md](DEVELOPMENT.md), plus pointers from the root README.
 
 Two commit messages state the wrong test count, because I wrote them before reading pytest's output. History isn't rewritten:
 - `155bfd4` says "15 passed"; the actual count was 18.
@@ -203,7 +212,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - **Caches off /home.** `~/.cache` already holds 3 GB (pip, huggingface) on /home. Set `PIP_CACHE_DIR`, `HF_HOME`, `TORCH_HOME` and `XDG_CACHE_HOME` before any pip or download.
 11. **Small script fixes.**
     - `.gitignore` already ignores `logs/`. Replace that line with `logs/*` and `!logs/.gitkeep`.
-    - `#SBATCH --output` can't expand variables, so hard-code `/data/cmpe261-fa26/group4/011383814/fast-sd-inference/logs/%x-%j.out`.
+    - ~~`#SBATCH --output` can't expand variables, so hard-code `/data/cmpe261-fa26/group4/011383814/fast-sd-inference/logs/%x-%j.out`.~~ Superseded by a4ffae1. Hard-coding Dan's clone sent teammates' jobs to his code and logs. Job scripts now use `--output=logs/%x-%j.out`, relative to the submit directory, and find their clone from `$SLURM_SUBMIT_DIR`. `logs/.gitkeep` is committed, so every clone has `logs/`.
     - `env/python` and `env/venv` in Phase 1 mean `/data/cmpe261-fa26/group4/env/{python,venv}`, not repo paths.
     - defq defaults to 1 GB per CPU, with at most 2 CPUs. `check_assets.sbatch` needs an explicit `--mem`, about 24G.
 
