@@ -28,6 +28,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-10-19 | 92197 | P1.1 clean-environment import check (`check_env.sbatch`, defq, 2 CPUs) | c19 | COMPLETED 0:0 in 36 s, MaxRSS 651 MB; all checks passed |
 | 2026-10-19 | 92223 | P2.1 offline asset check (`check_assets.sbatch --full`, defq, 2 CPUs, 24G) | c19 | FAILED 1:0 in 1m54s, MaxRSS 2.6 GB; 16 of 17 checks passed. CLIP ViT-L/14 failed: torchmetrics CLIPScore doesn't work with transformers 5 (see open issues) |
 | 2026-10-19 | 92251 | P2.2 offline asset check, rerun with the CLIPScore adapter | c19 | COMPLETED 0:0 in 1m25s, MaxRSS 2.35 GB (sampled); all 17 checks passed |
+| 2026-10-19 | 92300 | P2.3 confirm check jobs use the submitting clone (a4ffae1), `check_env.sbatch` | c19 | COMPLETED 0:0 in 20 s; the log landed in the submitting clone's `logs/`, shows commit 447ac76, and has 40/40 checks ok |
 
 ## Phase 2: Offline assets, R2 and part of D2 (2026-10-19)
 
@@ -59,7 +60,7 @@ Job 92223, the first attempt, failed only on CLIP-L, because torchmetrics' CLIPS
 After the gate, two commits make the work usable by teammates:
 - `a4ffae1 fix(hpc): run check jobs from the submitting clone`. It also commits `logs/.gitkeep` and the `.gitignore` change, which PLAN.md had placed in Phase 3's first commit; Phase 3 keeps the `run_gpu.slurm` rework.
   - Tested on coe-hpc1: under `bash`, as a simulated Slurm spool copy, and from a fresh separate clone. That clone's own `src/` was used with the shared venv.
-  - Not yet run as a real Slurm job; the next submitted check will confirm it.
+  - Confirmed under real Slurm by job 92300. Slurm's working directory was the submitting clone, and the log landed in that clone's `logs/` through the relative `--output`.
 - `docs(hpc): add HPC overview and development guide`: [README.md](README.md) and [DEVELOPMENT.md](DEVELOPMENT.md), plus pointers from the root README.
 
 Two commit messages state the wrong test count, because I wrote them before reading pytest's output. History isn't rewritten:
