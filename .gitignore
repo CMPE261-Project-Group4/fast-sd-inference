@@ -16,7 +16,8 @@ results/*
 *.pt
 *.bin
 data/coco/
-logs/
+logs/*
+!logs/.gitkeep
 slurm-*.out
 
 # OS / editor

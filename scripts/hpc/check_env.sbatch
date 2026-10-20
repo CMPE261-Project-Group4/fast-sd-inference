@@ -2,7 +2,7 @@
 # Check that the shared venv works in a clean environment: no modules, nothing
 # inherited from the submitting shell, only env/site.sh.
 #
-# On COE-HPC3 (Dan submits, from g17):
+# On COE-HPC3, from the root of your clone on g17 (the log lands in its logs/):
 #     sbatch scripts/hpc/check_env.sbatch
 # On coe-hpc1 the same check runs directly (the #SBATCH lines are only comments):
 #     bash scripts/hpc/check_env.sbatch
@@ -12,10 +12,16 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4G
 #SBATCH --time=00:10:00
-#SBATCH --output=/data/cmpe261-fa26/group4/011383814/fast-sd-inference/logs/%x-%j.out
+#SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
-CLONE=/data/cmpe261-fa26/group4/011383814/fast-sd-inference
+# The clone to check: the one the job was submitted from (Slurm runs a spooled copy of
+# this script), or this script's own clone when run with bash.
+CLONE="$(cd "${SLURM_SUBMIT_DIR:-$(dirname "${BASH_SOURCE[0]}")/../..}" && pwd)"
+if [[ ! -f "${CLONE}/env/site.sh" ]]; then
+    echo "error: ${CLONE} is not a fast-sd-inference clone; submit from the repo root" >&2
+    exit 1
+fi
 
 echo "job=${SLURM_JOB_ID:-none} node=$(hostname) partition=${SLURM_JOB_PARTITION:-none}" \
      "date=$(date -Is) commit=$(cd "${CLONE}" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
