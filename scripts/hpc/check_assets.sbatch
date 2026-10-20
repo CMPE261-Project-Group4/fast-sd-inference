@@ -1,7 +1,7 @@
 #!/bin/bash
 # Phase 2 gate: every model, metric weight and dataset file loads on an HPC3 node offline.
 #
-# On COE-HPC3 (Dan submits, from g17):
+# On COE-HPC3, from the root of your clone on g17 (the log lands in its logs/):
 #     sbatch scripts/hpc/check_assets.sbatch
 # The quick variant (files, hashes, counts; no model loads) runs on coe-hpc1:
 #     source env/site.sh && python scripts/hpc/check_assets.py --quick
@@ -14,10 +14,16 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
 #SBATCH --time=00:30:00
-#SBATCH --output=/data/cmpe261-fa26/group4/011383814/fast-sd-inference/logs/%x-%j.out
+#SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
-CLONE=/data/cmpe261-fa26/group4/011383814/fast-sd-inference
+# The clone to check: the one the job was submitted from (Slurm runs a spooled copy of
+# this script), or this script's own clone when run with bash.
+CLONE="$(cd "${SLURM_SUBMIT_DIR:-$(dirname "${BASH_SOURCE[0]}")/../..}" && pwd)"
+if [[ ! -f "${CLONE}/env/site.sh" ]]; then
+    echo "error: ${CLONE} is not a fast-sd-inference clone; submit from the repo root" >&2
+    exit 1
+fi
 
 echo "job=${SLURM_JOB_ID:-none} node=$(hostname) partition=${SLURM_JOB_PARTITION:-none}" \
      "date=$(date -Is) commit=$(cd "${CLONE}" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
