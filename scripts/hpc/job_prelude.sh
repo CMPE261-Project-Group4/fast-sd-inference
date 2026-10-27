@@ -39,7 +39,7 @@ trap 'rm -rf "${STAGE}"' EXIT
 echo "job=${SLURM_JOB_ID:-none} node=$(hostname) partition=${SLURM_JOB_PARTITION:-none}" \
      "cpus=${SLURM_CPUS_PER_TASK:-?} gpus=${CUDA_VISIBLE_DEVICES:-none} date=$(date -Is)" \
      "commit=$(cd "${CLONE}" && git rev-parse --short HEAD 2>/dev/null || echo unknown)$(
-         cd "${CLONE}" && git diff --quiet HEAD 2>/dev/null || echo +uncommitted)"
+         [[ -z "$(cd "${CLONE}" && git status --porcelain 2>/dev/null)" ]] || echo +uncommitted)"
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] && command -v nvidia-smi >/dev/null; then
     nvidia-smi -i "${CUDA_VISIBLE_DEVICES}" \
         --query-gpu=index,name,driver_version,memory.used,memory.total --format=csv || true
