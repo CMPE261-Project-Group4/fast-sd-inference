@@ -193,6 +193,7 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `scripts/hpc/check_env.sbatch` | import check in a clean environment (CPU job, or `bash` on coe-hpc1) |
 | `scripts/hpc/check_assets.py`, `check_assets.sbatch` | offline load check: `--quick` on coe-hpc1, `--full` as a CPU job |
 | `scripts/hpc/job_prelude.sh` | the common start of every job: clean env, `site.sh`, threads, `$STAGE`, logging |
+| `scripts/hpc/gpu_diagnose.sbatch` | when a job can't use its GPU: tells a broken GPU apart from our environment handling (§7) |
 | `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5, once Phase 4's prompt files exist. |
 
 ## 7. Troubleshooting
@@ -204,6 +205,7 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | The job finished but there's no log | submitted from outside the repo root | `cd` to your clone's root before `sbatch` |
 | `error: … is not a fast-sd-inference clone` | the same | the same |
 | The job landed on a P100 or an H100 | a plain `--gres=gpu:1` | `--gres=gpu:a100:1` |
+| `CUDA error: CUDA-capable device(s) is/are busy or unavailable` on an idle GPU | a broken GPU: GPU 0 on cs002 since at least 2026-10-27 (job 98023). Slurm hands out the lowest free index, so 1-GPU jobs on an otherwise idle cs002 always get it | resubmit with `sbatch --exclude=cs002 …`. On another node, run `scripts/hpc/gpu_diagnose.sbatch` with `--nodelist=<node>` to confirm, then exclude that node and tell the HPC admins the node, GPU index and UUID |
 | `Requested node configuration is not available` | more than 2 CPUs on `defq` | use `-c 2`, or `cpuqs` |
 | `check_env` fails "venv matches requirements.lock" | someone ran pip in the shared venv | when no jobs run, rerun `scripts/hpc/setup_env.sh`, which rebuilds the venv |
 | `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 | use the `CLIPTensorFeatures` adapter in `scripts/hpc/check_assets.py`; Phase 5 settles this |
