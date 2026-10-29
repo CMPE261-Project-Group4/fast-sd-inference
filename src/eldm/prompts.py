@@ -93,3 +93,56 @@ def build_eval_set(coco: list[tuple[int, str]], parti: list[dict[str, str]], bas
     rows += [dict(prompt=r["Prompt"], source="parti", category=r["Category"], challenge=r["Challenge"])
              for r in parti]
     return [Prompt(id=i, seed=base_seed + i, **row) for i, row in enumerate(rows)]
+
+
+def allocate(sizes: dict[str, int], n: int) -> dict[str, int]:
+    """Split n across strata in proportion to their sizes.
+
+    Largest-remainder rounding: each stratum gets the floor of its exact share, and the units
+    left over go to the largest remainders, ties broken by stratum name.
+    """
+    total = sum(sizes.values())
+    if not 0 <= n <= total:
+        raise ValueError(f"can't take {n} from {total}")
+    counts = {k: n * size // total for k, size in sizes.items()}
+    by_remainder = sorted(sizes, key=lambda k: (-(n * sizes[k] % total), k))
+    for k in by_remainder[: n - sum(counts.values())]:
+        counts[k] += 1
+    return counts
+
+
+def stratified_sample(prompts: list[Prompt], n: int, seed: int) -> list[Prompt]:
+    """n prompts spread across Challenges in proportion to their sizes, in id order.
+
+    Each Challenge gets its own seeded order (from the seed and its name), and its first k are
+    taken. So with one seed, a smaller sample is always inside a larger one.
+    """
+    by_challenge: dict[str, list[Prompt]] = {}
+    for p in sorted(prompts, key=lambda p: p.id):
+        if p.challenge is None:
+            raise ValueError(f"prompt {p.id} has no challenge")
+        by_challenge.setdefault(p.challenge, []).append(p)
+    counts = allocate({k: len(v) for k, v in by_challenge.items()}, n)
+    chosen = []
+    for challenge, members in by_challenge.items():
+        random.Random(f"{seed}:{challenge}").shuffle(members)
+        chosen += members[: counts[challenge]]
+    return sorted(chosen, key=lambda p: p.id)
+
+
+def build_subsets(prompts: list[Prompt], seed: int) -> dict[str, list[Prompt]]:
+    """The subset files, made of the full set's rows (same ids and seeds), each in id order.
+
+    debug:     the first 50 rows.
+    pilot:     the first 100 COCO prompts and 100 PartiPrompts, stratified by Challenge.
+    parti_550: every COCO prompt and 550 stratified PartiPrompts: the fallback sweep set
+               for gate G2 (Dan, 2026-10-28).
+    With one seed, debug ⊂ pilot ⊂ parti_550.
+    """
+    coco = [p for p in prompts if p.source == "coco"]
+    parti = [p for p in prompts if p.source == "parti"]
+    return {
+        "debug": prompts[:50],
+        "pilot": coco[:100] + stratified_sample(parti, 100, seed),
+        "parti_550": coco + stratified_sample(parti, 550, seed),
+    }

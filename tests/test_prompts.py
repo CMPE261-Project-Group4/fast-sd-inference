@@ -6,12 +6,15 @@ import pytest
 
 from eldm.prompts import (
     Prompt,
+    allocate,
     build_eval_set,
+    build_subsets,
     load_prompts,
     normalize_text,
     read_partiprompts,
     sample_coco,
     save_prompts,
+    stratified_sample,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,10 +24,29 @@ _spec.loader.exec_module(prepare_prompts)
 
 HEADER = "Prompt\tCategory\tChallenge\tNote\n"
 
+# PartiPrompts' Challenge sizes, and the allocations the frozen subsets use (Phase 4 plan).
+CHALLENGES = {"Fine-grained Detail": 312, "Basic": 272, "Simple Detail": 232, "Style & Format": 206,
+              "Imagination": 150, "Complex": 113, "Writing & Symbols": 91, "Quantity": 90,
+              "Perspective": 70, "Linguistic Structures": 61, "Properties & Positioning": 35}
+PILOT_PARTI = dict(zip(CHALLENGES, [19, 17, 14, 13, 9, 7, 6, 5, 4, 4, 2]))
+FALLBACK_PARTI = dict(zip(CHALLENGES, [105, 92, 78, 69, 50, 38, 31, 30, 24, 21, 12]))
+
 
 def write_parti(path: Path, lines: list[str]) -> Path:
     path.write_text(HEADER + "".join(line + "\n" for line in lines), encoding="utf-8")
     return path
+
+
+def write_parti_sized(path: Path, sizes: dict[str, int]) -> Path:
+    """A PartiPrompts file with sizes[c] prompts in Challenge c, the Challenges interleaved."""
+    names = [c for c, size in sizes.items() for _ in range(size)]
+    order = sorted(range(len(names)), key=lambda i: (i * 7919) % len(names))  # a fixed shuffle
+    return write_parti(path, [f"prompt {i}\tArts\t{names[i]}\t" for i in order])
+
+
+def parti_prompts(sizes: dict[str, int]) -> list[Prompt]:
+    names = [c for c, size in sizes.items() for _ in range(size)]
+    return [Prompt(i, f"p{i}", "parti", "Arts", 1000 + i, challenge=c) for i, c in enumerate(names)]
 
 
 def write_coco(path: Path, num_images: int = 20) -> Path:
@@ -105,16 +127,75 @@ def test_save_and_load_round_trip(tmp_path):
     assert load_prompts(tmp_path / "p.jsonl") == prompts
 
 
-def test_prepare_prompts_builds_the_full_set(tmp_path, capsys):
-    tsv = write_parti(tmp_path / "p.tsv", ["bond\tAbstract\tBasic\t", "two cats\tAnimals\tQuantity\t"])
-    out = tmp_path / "eval.jsonl"
-    argv = ["--coco-captions", str(write_coco(tmp_path / "c.json")), "--parti-tsv", str(tsv),
-            "--num-coco", "5", "--out", str(out), "--skip-token-count"]
+def test_allocate_matches_the_frozen_subsets():
+    assert allocate(CHALLENGES, 100) == PILOT_PARTI
+    assert allocate(CHALLENGES, 550) == FALLBACK_PARTI
+    total = sum(CHALLENGES.values())
+    for n, counts in [(100, PILOT_PARTI), (550, FALLBACK_PARTI)]:
+        assert all(abs(counts[c] - n * size / total) < 1 for c, size in CHALLENGES.items())
+
+
+def test_allocate_edges_and_ties():
+    assert allocate({"b": 1, "a": 1}, 1) == {"a": 1, "b": 0}  # equal remainders: by name
+    assert allocate({"a": 3, "b": 2}, 0) == {"a": 0, "b": 0}
+    assert allocate({"a": 3, "b": 2}, 5) == {"a": 3, "b": 2}
+    with pytest.raises(ValueError):
+        allocate({"a": 3, "b": 2}, 6)
+
+
+def test_stratified_sample_is_proportional_seeded_and_nested():
+    prompts = parti_prompts(CHALLENGES)
+    pilot = stratified_sample(prompts, 100, seed=0)
+    fallback = stratified_sample(prompts, 550, seed=0)
+    assert {c: sum(p.challenge == c for p in pilot) for c in CHALLENGES} == PILOT_PARTI
+    assert {c: sum(p.challenge == c for p in fallback) for c in CHALLENGES} == FALLBACK_PARTI
+    assert [p.id for p in pilot] == sorted(p.id for p in pilot)
+    assert stratified_sample(prompts, 100, seed=0) == pilot
+    assert stratified_sample(prompts, 100, seed=1) != pilot
+    assert {p.id for p in pilot} <= {p.id for p in fallback}
+    assert stratified_sample(prompts[::-1], 100, seed=0) == pilot  # input order doesn't matter
+
+
+def test_stratified_sample_needs_challenges():
+    with pytest.raises(ValueError):
+        stratified_sample([Prompt(0, "a dog", "coco", "coco", 1000, 42)], 1, seed=0)
+
+
+def test_build_subsets_reuse_full_set_rows_and_nest():
+    coco = [Prompt(i, f"c{i}", "coco", "coco", 1000 + i, coco_image_id=i) for i in range(120)]
+    parti = [Prompt(120 + p.id, p.prompt, "parti", p.category, 1120 + p.id, challenge=p.challenge)
+             for p in parti_prompts(CHALLENGES)]
+    full = coco + parti
+    subsets = build_subsets(full, seed=0)
+    assert {name: len(s) for name, s in subsets.items()} == {"debug": 50, "pilot": 200, "parti_550": 670}
+    by_id = {p.id: p for p in full}
+    for subset in subsets.values():
+        assert all(by_id[p.id] == p for p in subset)  # same rows, so same ids and seeds
+        assert [p.id for p in subset] == sorted(p.id for p in subset)
+    ids = {name: {p.id for p in s} for name, s in subsets.items()}
+    assert ids["debug"] == set(range(50))
+    assert ids["debug"] <= ids["pilot"] <= ids["parti_550"]
+    assert sum(p.source == "coco" for p in subsets["pilot"]) == 100
+    assert sum(p.source == "coco" for p in subsets["parti_550"]) == 120
+
+
+def test_prepare_prompts_writes_the_set_and_subsets(tmp_path, capsys):
+    tsv = write_parti_sized(tmp_path / "p.tsv", CHALLENGES)
+    out, subsets_dir = tmp_path / "eval.jsonl", tmp_path / "subsets"
+    argv = ["--coco-captions", str(write_coco(tmp_path / "c.json", num_images=150)), "--parti-tsv", str(tsv),
+            "--num-coco", "120", "--out", str(out), "--subsets-dir", str(subsets_dir), "--skip-token-count"]
     assert prepare_prompts.main(argv) == 0
     prompts = load_prompts(out)
-    assert [p.source for p in prompts] == ["coco"] * 5 + ["parti"] * 2
-    assert [p.id for p in prompts] == list(range(7)) and all(p.seed == 1000 + p.id for p in prompts)
-    assert "Wrote 7 prompts" in capsys.readouterr().out
-    first = out.read_bytes()
+    assert [p.source for p in prompts] == ["coco"] * 120 + ["parti"] * 1632
+    assert [p.id for p in prompts] == list(range(1752)) and all(p.seed == 1000 + p.id for p in prompts)
+    by_id = {p.id: p for p in prompts}
+    sizes = {}
+    for name in ("debug", "pilot", "parti_550"):
+        subset = load_prompts(subsets_dir / f"{name}.jsonl")
+        assert all(by_id[p.id] == p for p in subset)
+        sizes[name] = len(subset)
+    assert sizes == {"debug": 50, "pilot": 200, "parti_550": 670}
+    assert "Wrote 1752 prompts" in capsys.readouterr().out
+    first = [f.read_bytes() for f in [out, *sorted(subsets_dir.iterdir())]]
     prepare_prompts.main(argv)
-    assert out.read_bytes() == first  # byte-for-byte reproducible
+    assert [f.read_bytes() for f in [out, *sorted(subsets_dir.iterdir())]] == first  # byte-for-byte

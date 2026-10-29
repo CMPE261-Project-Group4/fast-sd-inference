@@ -1,10 +1,12 @@
-"""Build the frozen evaluation prompt set: 2,000 COCO 2017 val captions, then all of PartiPrompts.
+"""Build the frozen evaluation prompt set: 2,000 COCO 2017 val captions, then all of PartiPrompts,
+plus its subsets (debug, pilot, parti_550).
 
     python scripts/prepare_prompts.py      # the shared datasets and the frozen settings
 
 Ids are 0..N-1, COCO first, then PartiPrompts in file order. Each prompt's generation seed
-is base_seed + id. Prompts over CLIP's 77 tokens are listed and kept: every config
-truncates them the same way. See data/prompts/README.md.
+is base_seed + id. Subsets reuse the full set's rows, so ids and seeds match across files.
+Prompts over CLIP's 77 tokens are listed and kept: every config truncates them the same way.
+See data/prompts/README.md.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from eldm.prompts import Prompt, build_eval_set, read_partiprompts, sample_coco, save_prompts
+from eldm.prompts import Prompt, build_eval_set, build_subsets, read_partiprompts, sample_coco, save_prompts
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASETS = Path(os.environ.get("ELDM_DATASETS", "/data/cmpe261-fa26/group4/datasets"))
@@ -44,9 +46,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--coco-captions", type=Path, default=DATASETS / "coco/annotations/captions_val2017.json")
     ap.add_argument("--parti-tsv", type=Path, default=DATASETS / "partiprompts/PartiPrompts.tsv")
     ap.add_argument("--num-coco", type=int, default=2000)
-    ap.add_argument("--sample-seed", type=int, default=0, help="Seed for choosing COCO images and captions")
+    ap.add_argument("--sample-seed", type=int, default=0,
+                    help="Seed for choosing COCO images and captions, and the stratified subsets")
     ap.add_argument("--base-seed", type=int, default=1000, help="Generation seed = base_seed + prompt id")
     ap.add_argument("--out", type=Path, default=ROOT / "data/prompts/eval_prompts.jsonl")
+    ap.add_argument("--subsets-dir", type=Path, default=ROOT / "data/prompts/subsets")
     ap.add_argument("--skip-token-count", action="store_true", help="Don't load the tokenizer (tests)")
     args = ap.parse_args(argv)
 
@@ -59,6 +63,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {source}: {n}")
     for challenge, n in Counter(p.challenge for p in prompts if p.challenge).most_common():
         print(f"    {challenge}: {n}")
+    for name, subset in build_subsets(prompts, args.sample_seed).items():
+        save_prompts(subset, args.subsets_dir / f"{name}.jsonl")
+        sources = ", ".join(f"{s} {n}" for s, n in Counter(p.source for p in subset).items())
+        print(f"Wrote subset {name}: {len(subset)} prompts ({sources}) to {args.subsets_dir / name}.jsonl")
     if not args.skip_token_count:
         over = over_token_limit(prompts)
         if over is not None:
