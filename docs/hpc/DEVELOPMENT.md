@@ -200,7 +200,9 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `scripts/hpc/gpu_diagnose.sbatch` | when a job can't use its GPU: tells a broken GPU apart from our environment handling (§7) |
 | `scripts/hpc/gpu_check.py`, `check_gpu.sbatch` | gate G1's smoke check: 4 variants × 2 images through `eldm.benchmark.run` |
 | `scripts/check_run.py` | checks run directories: images present, decodable and not blank; `perf.json` complete |
-| `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5, once Phase 4's prompt files exist. |
+| `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5. |
+| `data/prompts/eval_prompts.jsonl`, `data/prompts/subsets/` | the frozen prompt set and its subsets; never edit by hand ([data/prompts/README.md](../../data/prompts/README.md)) |
+| `scripts/prepare_prompts.py` | rebuilds the frozen prompt files from the shared datasets (about 3 s on coe-hpc1) |
 
 ## 7. Troubleshooting
 

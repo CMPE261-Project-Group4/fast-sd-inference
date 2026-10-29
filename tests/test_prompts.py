@@ -1,5 +1,8 @@
+import hashlib
 import importlib.util
 import json
+import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -199,3 +202,54 @@ def test_prepare_prompts_writes_the_set_and_subsets(tmp_path, capsys):
     first = [f.read_bytes() for f in [out, *sorted(subsets_dir.iterdir())]]
     prepare_prompts.main(argv)
     assert [f.read_bytes() for f in [out, *sorted(subsets_dir.iterdir())]] == first  # byte-for-byte
+
+
+# The frozen files in data/prompts (Phase 4). These guard them against drift.
+PROMPTS_DIR = ROOT / "data/prompts"
+FROZEN = ["eval_prompts.jsonl", "subsets/debug.jsonl", "subsets/parti_550.jsonl", "subsets/pilot.jsonl"]
+SUBSET_SIZES = {"debug": 50, "pilot": 200, "parti_550": 2550}
+
+
+def test_frozen_eval_set_counts():
+    full = load_prompts(PROMPTS_DIR / "eval_prompts.jsonl")
+    assert [p.id for p in full] == list(range(3632))
+    assert all(p.seed == 1000 + p.id for p in full)
+    assert Counter(p.source for p in full) == {"coco": 2000, "parti": 1632}
+    assert [p.source for p in full[:2000]] == ["coco"] * 2000
+    assert len({p.coco_image_id for p in full if p.source == "coco"}) == 2000
+    assert all(p.challenge is None for p in full[:2000])
+    # The data doc's numbers, as PLAN.md quotes them: 90 Quantity, 91 Writing & Symbols.
+    assert Counter(p.challenge for p in full[2000:]) == CHALLENGES
+
+
+def test_frozen_subsets():
+    full = {p.id: p for p in load_prompts(PROMPTS_DIR / "eval_prompts.jsonl")}
+    subsets = {name: load_prompts(PROMPTS_DIR / f"subsets/{name}.jsonl") for name in SUBSET_SIZES}
+    assert {name: len(s) for name, s in subsets.items()} == SUBSET_SIZES
+    for subset in subsets.values():
+        assert all(full[p.id] == p for p in subset)  # the full set's rows: same ids and seeds
+    ids = {name: {p.id for p in s} for name, s in subsets.items()}
+    assert ids["debug"] == set(range(50)) and ids["debug"] <= ids["pilot"] <= ids["parti_550"]
+    assert Counter(p.challenge for p in subsets["pilot"] if p.challenge) == PILOT_PARTI
+    assert Counter(p.challenge for p in subsets["parti_550"] if p.challenge) == FALLBACK_PARTI
+    assert Counter(p.source for p in subsets["parti_550"]) == {"coco": 2000, "parti": 550}
+
+
+def test_frozen_files_match_readme_checksums():
+    listed = re.findall(r"^([0-9a-f]{64})  (\S+)$", (PROMPTS_DIR / "README.md").read_text(), re.MULTILINE)
+    assert sorted(name for _, name in listed) == FROZEN
+    for digest, name in listed:
+        assert hashlib.sha256((PROMPTS_DIR / name).read_bytes()).hexdigest() == digest, name
+
+
+@pytest.mark.skipif(
+    not (prepare_prompts.DATASETS / "coco/annotations/captions_val2017.json").exists()
+    or not (prepare_prompts.DATASETS / "partiprompts/PartiPrompts.tsv").exists(),
+    reason="needs the shared datasets ($ELDM_DATASETS)",
+)
+def test_frozen_files_regenerate_byte_for_byte(tmp_path):
+    argv = ["--out", str(tmp_path / "eval_prompts.jsonl"), "--subsets-dir", str(tmp_path / "subsets"),
+            "--skip-token-count"]
+    assert prepare_prompts.main(argv) == 0
+    for name in FROZEN:
+        assert (tmp_path / name).read_bytes() == (PROMPTS_DIR / name).read_bytes(), name
