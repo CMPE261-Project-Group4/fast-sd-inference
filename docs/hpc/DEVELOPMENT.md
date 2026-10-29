@@ -69,7 +69,7 @@ The jobs we have:
 |---|---|---|---|
 | `scripts/hpc/check_env.sbatch` | the shared venv imports in a clean environment | defq, 2 CPUs, 4G, 10 min | ~40 s |
 | `scripts/hpc/check_assets.sbatch` | every model, metric weight and dataset loads with the network blocked | defq, 2 CPUs, 24G, 30 min | ~1.5 min |
-| `scripts/hpc/check_gpu.sbatch` | gate G1: baseline, FP16, DPM-Solver++ 20 and DeepCache N=3 make 2 images each on an A100; `check_run.py` checks them, including NFE, stage times and the run environment. Outputs in `results/_checks/<jobid>/` | gpuqs, 1× A100, 8 CPUs, 32G, 20 min | ~1 min |
+| `scripts/hpc/check_gpu.sbatch` | gate G1: baseline, FP16, DPM-Solver++ 20 and DeepCache N=3 make 2 images each on an A100; `check_run.py` checks them, including NFE, stage times and the run environment. Outputs in `results/_checks/<jobid>/` | gpuqs, 1× A100, 8 CPUs, 32G, 20 min | ~2 min |
 | `scripts/hpc/gpu_diagnose.sbatch` | why a job can't use its GPU (§7) | gpuqs, 1× A100, 2 CPUs, 8G, 10 min | ~20 s |
 
 Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A100, 20 minutes by default. For a full run, pass `sbatch --time=…`. To run on a subset of the frozen prompts, pass `--prompts-file data/prompts/subsets/<name>.jsonl`; give each result set its own `--output-root`:
@@ -77,8 +77,9 @@ Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A
 sbatch --exclude=cs002 --time=00:30:00 scripts/hpc/run_gpu.slurm configs/experiments/00_baseline.yaml \
     --prompts-file data/prompts/subsets/debug.jsonl --output-root /scratch/cmpe261-fa26/group4/results/p5/debug_a
 ```
+That job (98330) took 10 minutes: 50 images at batch 1 and 50 at batch 4, FP32 with TF32 off.
 
-Quality is evaluated by a second GPU job, `scripts/hpc/evaluate.slurm <results_dir> <baseline_run_dir>`: CLIP Score, KID, LPIPS against the baseline (and FID from 5,000 COCO images) for every run under `<results_dir>`, then `check_run.py --expect-quality` and `summarize.py` into `<results_dir>/summary/`. One A100, 30 minutes by default.
+Quality is evaluated by a second GPU job, `scripts/hpc/evaluate.slurm <results_dir> <baseline_run_dir>`: CLIP Score, KID, LPIPS against the baseline (and FID from 5,000 COCO images) for every run under `<results_dir>`, then `check_run.py --expect-quality` and `summarize.py` into `<results_dir>/summary/`. One A100, 30 minutes by default; 4 runs of 50 images took 73 s (job 98332). To start it when the runs succeed, submit it with `--dependency=afterok:<jobid>:<jobid>`.
 
 **Add `--exclude=cs002` to every GPU job** until the admins fix its GPU 0 (§7).
 
@@ -230,5 +231,6 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 | don't use CLIPScore: `eldm.metrics.ClipScorer` computes CLIP Score by hand (Phase 5). `check_assets.py` keeps the `CLIPTensorFeatures` adapter for its own check |
 | `check_run` says stage coverage is outside (0.9, 1.01) | the three stage times don't add up to the batch's end-to-end time: something else in the pipeline call took over 10% (a slow image save doesn't count; it's outside the timer) | look at that batch in `timings.jsonl`; on a very fast config, the PIL conversion's share can grow, so report it before changing the bound |
 | Timings vary between runs | shared nodes: other jobs use the CPUs; GPUs aren't isolated | set thread counts; repeat runs; compare runs on the same node |
+| `check_run.py` takes minutes on coe-hpc1 | it reads every image, and files not yet cached come over shared storage: 200 PNGs took 160 s cold, at 5 % of a CPU, and 1.5 s cached | it's waiting on storage, not loading the node; for large result sets use the check inside `evaluate.slurm` |
 | `/home` quota or "No space left" errors | caches went to `~/.cache` | `source env/site.sh` before running anything |
-| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache" | nothing to do |
+| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache"; in `evaluate.slurm`, "The given NumPy array is not writable" (`eldm.metrics.load_image` only reads it) and "Metric `Kernel Inception Distance` will save all extracted features in buffer" | nothing to do |
