@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import torch
 from diffusers import DPMSolverMultistepScheduler, PNDMScheduler
 
 from eldm import pipeline
@@ -36,3 +37,15 @@ def test_build_pipeline_loads_pinned_revision(monkeypatch):
     assert calls["revision"] == cfg["model_revision"]
     assert isinstance(pipe.scheduler, DPMSolverMultistepScheduler)
     assert helper is None and device == "cpu"
+
+
+def test_build_pipeline_sets_tf32_flags(monkeypatch):
+    monkeypatch.setattr(pipeline.StableDiffusionPipeline, "from_pretrained", lambda *a, **k: FakePipe())
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", torch.backends.cuda.matmul.allow_tf32)
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", torch.backends.cudnn.allow_tf32)
+    base = {**load_yaml(ROOT / "configs/base.yaml"), "device": "cpu"}
+    assert base["tf32"] == {"matmul": False, "cudnn": False}  # the FP32 baseline is true FP32
+    for flag in (True, False):
+        pipeline.build_pipeline({**base, "tf32": {"matmul": flag, "cudnn": not flag}})
+        assert torch.backends.cuda.matmul.allow_tf32 is flag
+        assert torch.backends.cudnn.allow_tf32 is (not flag)

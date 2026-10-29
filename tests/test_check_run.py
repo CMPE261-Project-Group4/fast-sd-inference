@@ -15,6 +15,13 @@ check_run = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check_run)
 
 
+ENV = {
+    "device": "cuda", "node": "cs001", "torch": "2.6.0+cu124", "diffusers": "0.41.0", "git_commit": "abc123",
+    "attention": {"unet": ["AttnProcessor2_0"], "vae": ["AttnProcessor2_0"]},
+    "tf32_matmul": False, "tf32_cudnn": False, "gpu_uuid": "GPU-0000",
+}
+
+
 def make_run(tmp_path: Path, n: int = 2, gpu: str = "NVIDIA A100-PCIE-40GB") -> Path:
     """A run directory shaped like eldm.benchmark.run's output, which passes every check."""
     prompts = [Prompt(i, f"prompt {i}", "manual", "objects", 1000 + i) for i in range(n)]
@@ -22,15 +29,21 @@ def make_run(tmp_path: Path, n: int = 2, gpu: str = "NVIDIA A100-PCIE-40GB") -> 
     run = tmp_path / "baseline"
     (run / "images").mkdir(parents=True)
     (run / "config.yaml").write_text(yaml.safe_dump(
-        {"name": "baseline", "prompts_file": str(tmp_path / "prompts.jsonl"), "num_prompts": n}))
+        {"name": "baseline", "prompts_file": str(tmp_path / "prompts.jsonl"), "num_prompts": n, "batch_size": 1,
+         "tf32": {"matmul": False, "cudnn": False}}))
     rng = np.random.default_rng(0)
     for p in prompts:
         Image.fromarray(rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)).save(run / "images" / f"{p.id:04d}.png")
     (run / "perf.json").write_text(json.dumps({
         "name": "baseline", "num_images": n, "latency_per_image_s": 2.5, "throughput_img_per_s": 0.4,
-        "peak_mem_gb": 3.2, "env": {"device": "cuda", "gpu": gpu},
+        "nfe": 51, "nfe_full": 51, "peak_mem_gb": 3.2, "env": {**ENV, "gpu": gpu},
     }))
+    write_timings(run, [{"ids": [p.id], "latency_s": 2.5, "nfe": 51, "nfe_full": 51} for p in prompts])
     return run
+
+
+def write_timings(run: Path, rows: list[dict]) -> None:
+    (run / "timings.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
 def update_json(path: Path, **changes) -> None:
@@ -51,6 +64,7 @@ def test_num_prompts_limits_expected_images(tmp_path):
     cfg = yaml.safe_load((run / "config.yaml").read_text())
     (run / "config.yaml").write_text(yaml.safe_dump({**cfg, "num_prompts": 2}))
     update_json(run / "perf.json", num_images=2)
+    write_timings(run, [{"nfe": 51, "nfe_full": 51}] * 2)
     assert check_run.check_run(run) == []
 
 
@@ -81,14 +95,49 @@ def test_image_defects_fail(tmp_path, defect, expected):
     ({"throughput_img_per_s": None}, "throughput_img_per_s is None"),
     ({"num_images": 1}, "num_images 1, expected 2"),
     ({"peak_mem_gb": None}, "peak_mem_gb is None"),
-    ({"env": {"device": "cuda"}}, "env.gpu is missing"),
+    ({"env": {**ENV, "gpu": None}}, "env.gpu is missing"),
+    ({"env": {**ENV, "gpu": "A100", "gpu_uuid": None}}, "env.gpu_uuid is missing"),
+    ({"env": {"device": "cpu"}}, "env.tf32_matmul is missing"),
     ({"name": "fp16"}, "name 'fp16' != config name 'baseline'"),
+    ({"nfe": None}, "nfe is None"),
+    ({"nfe_full": 0}, "nfe_full is 0"),
+    ({"nfe_full": 52}, "nfe_full 52 > nfe 51"),
+    ({"env": {**ENV, "gpu": "A100", "tf32_cudnn": True}}, "TF32 cudnn was True in the run, config asks for False"),
 ])
 def test_perf_defects_fail(tmp_path, changes, expected):
     run = make_run(tmp_path)
     update_json(run / "perf.json", **changes)
     problems = check_run.check_run(run)
     assert any(expected in p for p in problems), problems
+
+
+def test_cpu_run_needs_no_gpu_fields(tmp_path):
+    run = make_run(tmp_path)
+    cpu_env = {k: v for k, v in ENV.items() if k != "gpu_uuid"} | {"device": "cpu"}
+    update_json(run / "perf.json", env=cpu_env, peak_mem_gb=None)
+    assert check_run.check_run(run) == []
+
+
+@pytest.mark.parametrize("rows, expected", [
+    ([{"nfe": 51, "nfe_full": 51}], "1 rows, expected 2 batches"),
+    ([{"nfe": 51, "nfe_full": 51}, {"nfe": 51, "nfe_full": 17}], "NFE differs between batches"),
+    ([{"nfe": 51, "nfe_full": 60}] * 2, "nfe 51, nfe_full 60"),
+    ([{"latency_s": 2.5}] * 2, "nfe None, nfe_full None"),
+])
+def test_timings_defects_fail(tmp_path, rows, expected):
+    run = make_run(tmp_path)
+    write_timings(run, rows)
+    problems = check_run.check_run(run)
+    assert any(expected in p for p in problems), problems
+
+
+def test_timings_rows_follow_batch_size(tmp_path):
+    run = make_run(tmp_path, n=3)
+    cfg = yaml.safe_load((run / "config.yaml").read_text())
+    (run / "config.yaml").write_text(yaml.safe_dump({**cfg, "batch_size": 2}))
+    assert any("3 rows, expected 2 batches" in p for p in check_run.check_run(run))
+    write_timings(run, [{"nfe": 51, "nfe_full": 51}] * 2)
+    assert check_run.check_run(run) == []
 
 
 def test_missing_perf_and_wrong_gpu_fail(tmp_path):

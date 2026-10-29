@@ -1,9 +1,11 @@
 """Check generated run directories, so results are verified by a script, not by eye.
 
 For each run: every expected image (from config.yaml's prompts_file and num_prompts) exists,
-with no extras, and decodes and isn't blank; perf.json has the fields the summary needs;
-with --expect-quality, quality.json has a CLIP score. Every problem is listed, not just the
-first, and the exit status is non-zero if any run fails.
+with no extras, and decodes and isn't blank; perf.json has the fields the summary needs,
+including NFE and the run environment, with the TF32 flags the config asked for; timings.jsonl
+has one row per batch with the same NFE; with --expect-quality, quality.json has a CLIP
+score. Every problem is listed, not just the first, and the exit status is non-zero if any
+run fails.
 
 Example:
     python scripts/check_run.py --require-gpu A100 /scratch/cmpe261-fa26/group4/results/_checks/<jobid>/*/
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -25,6 +28,10 @@ from eldm.prompts import load_prompts
 # Pixel standard deviation (0-255 scale) below which an image counts as blank. Stable
 # Diffusion images sit far above it; black frames from fp16 NaNs and flat images are ~0.
 MIN_PIXEL_STD = 2.0
+
+# perf.json env fields every run records (eldm.benchmark._env_info), plus these on CUDA.
+ENV_KEYS = ("node", "torch", "diffusers", "git_commit", "attention", "tf32_matmul", "tf32_cudnn")
+CUDA_ENV_KEYS = ("gpu", "gpu_uuid")
 
 
 def _number_ok(value) -> bool:
@@ -64,14 +71,43 @@ def check_perf(run_dir: Path, cfg: dict, n_expected: int, require_gpu: str | Non
     for key in ("latency_per_image_s", "throughput_img_per_s"):
         if not _number_ok(perf.get(key)):
             problems.append(f"perf.json {key} is {perf.get(key)!r}")
+    for key in ("nfe", "nfe_full"):
+        if not _number_ok(perf.get(key)):
+            problems.append(f"perf.json {key} is {perf.get(key)!r}")
+    if _number_ok(perf.get("nfe")) and _number_ok(perf.get("nfe_full")) and perf["nfe_full"] > perf["nfe"]:
+        problems.append(f"perf.json nfe_full {perf['nfe_full']} > nfe {perf['nfe']}")
     env = perf.get("env") or {}
-    if env.get("device") == "cuda":
-        if not _number_ok(perf.get("peak_mem_gb")):
-            problems.append(f"perf.json peak_mem_gb is {perf.get('peak_mem_gb')!r}")
-        if not env.get("gpu"):
-            problems.append("perf.json env.gpu is missing")
+    cuda = env.get("device") == "cuda"
+    for key in ENV_KEYS + (CUDA_ENV_KEYS if cuda else ()):
+        if env.get(key) is None:
+            problems.append(f"perf.json env.{key} is missing")
+    if cuda and not _number_ok(perf.get("peak_mem_gb")):
+        problems.append(f"perf.json peak_mem_gb is {perf.get('peak_mem_gb')!r}")
+    tf32 = cfg.get("tf32") or {}
+    for flag in ("matmul", "cudnn"):
+        if env.get(f"tf32_{flag}") is not None and env[f"tf32_{flag}"] != tf32.get(flag):
+            problems.append(f"TF32 {flag} was {env[f'tf32_{flag}']} in the run, config asks for {tf32.get(flag)}")
     if require_gpu and require_gpu not in str(env.get("gpu") or ""):
         problems.append(f"ran on {env.get('gpu')!r}, not {require_gpu}")
+    return problems
+
+
+def check_timings(run_dir: Path, cfg: dict, n_expected: int) -> list[str]:
+    """One timings.jsonl row per batch, each with the same NFE counts."""
+    try:
+        rows = [json.loads(line) for line in (run_dir / "timings.jsonl").read_text().splitlines() if line.strip()]
+    except (OSError, json.JSONDecodeError) as e:
+        return [f"timings.jsonl unreadable: {type(e).__name__}: {e}"]
+    problems = []
+    n_batches = math.ceil(n_expected / cfg.get("batch_size", 1))
+    if len(rows) != n_batches:
+        problems.append(f"timings.jsonl has {len(rows)} rows, expected {n_batches} batches")
+    counts = {(r.get("nfe"), r.get("nfe_full")) for r in rows}
+    if len(counts) > 1:
+        problems.append(f"timings.jsonl NFE differs between batches: {sorted(counts, key=str)}")
+    for nfe, nfe_full in counts:
+        if not (_number_ok(nfe) and _number_ok(nfe_full) and nfe_full <= nfe):
+            problems.append(f"timings.jsonl has nfe {nfe!r}, nfe_full {nfe_full!r}")
     return problems
 
 
@@ -93,6 +129,7 @@ def check_run(run_dir: Path, expect_quality: bool = False, require_gpu: str | No
     expected = {f"{p.id:04d}.png" for p in prompts}
     problems = check_images(run_dir, expected)
     problems += check_perf(run_dir, cfg, len(expected), require_gpu)
+    problems += check_timings(run_dir, cfg, len(expected))
     if expect_quality:
         problems += check_quality(run_dir)
     return problems
@@ -115,8 +152,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"          {p}")
         else:
             perf = json.loads((run_dir / "perf.json").read_text())
-            print(f"  ok    {run_dir}: {perf['num_images']} images, {perf['latency_per_image_s']:.2f} s/image"
-                  f" on {(perf.get('env') or {}).get('gpu') or (perf.get('env') or {}).get('device')}")
+            env = perf.get("env") or {}
+            print(f"  ok    {run_dir}: {perf['num_images']} images, {perf['latency_per_image_s']:.2f} s/image,"
+                  f" NFE {perf['nfe']} ({perf['nfe_full']} full) on {env.get('gpu') or env.get('device')}"
+                  f" ({env.get('node')})")
     print(f"{failed} of {len(args.runs)} run(s) failed." if failed else f"All {len(args.runs)} run(s) passed.")
     return 1 if failed else 0
 

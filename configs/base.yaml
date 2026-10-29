@@ -4,6 +4,11 @@ model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
 model_revision: 451f4fe16113bff5a5d2269ed5ad43b0592e9a14   # pinned commit; must match eldm.assets.HF["sd15"]
 device: auto            # auto | cuda | mps | cpu
 dtype: fp32             # fp32 | fp16
+# TF32 runs FP32 matmuls and convolutions on tensor cores with a 10-bit mantissa (A100). Both
+# off so the FP32 baseline is true FP32; torch 2.6's defaults are matmul off, cuDNN on.
+tf32:
+  matmul: false
+  cudnn: false
 
 scheduler: pndm         # pndm (SD1.5 default) | ddim | dpmpp_2m | euler | euler_a
 num_inference_steps: 50
