@@ -63,8 +63,8 @@ if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     exit 1
 fi
 
-# The prelude's environment: env -i, keeping only SLURM_*, CUDA_VISIBLE_DEVICES and TMPDIR.
-mapfile -t KEEP < <(env | grep -E '^(SLURM_[A-Za-z0-9_]*|CUDA_VISIBLE_DEVICES|TMPDIR)=' || true)
+# The prelude's environment: env -i, keeping only SLURM_*, SLURMD_*, CUDA_VISIBLE_DEVICES and TMPDIR.
+mapfile -t KEEP < <(env | grep -E '^(SLURMD?_[A-Za-z0-9_]*|CUDA_VISIBLE_DEVICES|TMPDIR)=' || true)
 clean() { env -i HOME="${HOME}" USER="${USER}" PATH=/usr/bin:/bin PYTHONNOUSERSITE=1 \
     ${KEEP[@]+"${KEEP[@]}"} "$@"; }
 
@@ -74,7 +74,7 @@ probe 'scontrol show job -d "${SLURM_JOB_ID}" | grep -iE "gres|tres|Nodes="'
 
 section "Slurm's GPU-related environment (raw)"
 probe 'env | grep -E "^(CUDA|GPU|NVIDIA|ROCR|SLURM_(JOB_GPUS|STEP_GPUS|GPUS|GPU_)|LD_LIBRARY_PATH)" | sort'
-probe 'echo "variables the prelude drops: $(compgen -e | grep -vE "^(SLURM_.*|CUDA_VISIBLE_DEVICES|TMPDIR|TORCH_PROBE|PY)$" | sort | tr "\n" " ")"'
+probe 'echo "variables the prelude drops: $(compgen -e | grep -vE "^(SLURMD?_.*|CUDA_VISIBLE_DEVICES|TMPDIR|TORCH_PROBE|PY)$" | sort | tr "\n" " ")"'
 
 section "Devices and cgroup"
 probe 'nvidia-smi --query-gpu=index,pci.bus_id,uuid,compute_mode,memory.used,utilization.gpu --format=csv'

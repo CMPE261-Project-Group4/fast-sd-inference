@@ -107,7 +107,7 @@ python "${CLONE}/scripts/<script>.py" --stage "${STAGE}" ...
 
 | What the prelude does | Why |
 |---|---|
-| Re-runs the job script under `env -i`, keeping only `SLURM_*`, `CUDA_VISIBLE_DEVICES` and `TMPDIR` | `sbatch` copies your g17 shell into the job, so a loaded module's `PYTHONPATH` or `LD_LIBRARY_PATH` would leak in. `CUDA_VISIBLE_DEVICES` is kept because nothing else stops the job from using another job's GPU: all 4 A100s are visible. |
+| Re-runs the job script under `env -i`, keeping only `SLURM_*`, `SLURMD_NODENAME`, `CUDA_VISIBLE_DEVICES` and `TMPDIR` | `sbatch` copies your g17 shell into the job, so a loaded module's `PYTHONPATH` or `LD_LIBRARY_PATH` would leak in. `CUDA_VISIBLE_DEVICES` is kept because nothing else stops the job from using another job's GPU: all 4 A100s are visible. |
 | Sources `env/site.sh` | paths, caches, offline flags and the venv; never `module load`, since modules differ between the clusters |
 | Sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` | CUDA then numbers GPUs the way `nvidia-smi` and Slurm do |
 | Sets `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK` | Slurm doesn't confine CPUs: torch used 28 threads under `-c 2` in job 92197 |

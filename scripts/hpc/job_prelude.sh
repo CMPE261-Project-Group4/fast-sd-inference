@@ -5,8 +5,8 @@
 #     source "${CLONE}/scripts/hpc/job_prelude.sh"
 #
 # It then:
-#   1. Re-runs the job script once under `env -i`, keeping only Slurm's variables,
-#      CUDA_VISIBLE_DEVICES and TMPDIR. Nothing from the submitting shell (modules,
+#   1. Re-runs the job script once under `env -i`, keeping only Slurm's variables
+#      (SLURM_*, SLURMD_NODENAME), CUDA_VISIBLE_DEVICES and TMPDIR. Nothing from the submitting shell (modules,
 #      LD_LIBRARY_PATH, PYTHONPATH) reaches the job. CUDA_VISIBLE_DEVICES must survive:
 #      cgroups don't isolate GPUs here, so it alone keeps the job on its own GPU.
 #   2. Sources env/site.sh: paths, caches, offline flags, the venv.
@@ -18,7 +18,7 @@
 #   5. Logs the job, node, commit, GPU and the other jobs on the node.
 
 if [[ -z "${ELDM_CLEAN_ENV:-}" ]]; then
-    mapfile -t _eldm_keep < <(env | grep -E '^(SLURM_[A-Za-z0-9_]*|CUDA_VISIBLE_DEVICES|TMPDIR)=' || true)
+    mapfile -t _eldm_keep < <(env | grep -E '^(SLURMD?_[A-Za-z0-9_]*|CUDA_VISIBLE_DEVICES|TMPDIR)=' || true)
     # ${a[@]+"${a[@]}"}: bash < 4.4 (coe-hpc1 has 4.2) calls an empty array unbound under set -u.
     exec env -i HOME="${HOME:-}" USER="${USER:-$(id -un)}" PATH=/usr/bin:/bin ELDM_CLEAN_ENV=1 \
         ${_eldm_keep[@]+"${_eldm_keep[@]}"} bash "$0" "$@"
@@ -48,5 +48,5 @@ if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] && command -v nvidia-smi >/dev/null; the
 fi
 if [[ -n "${SLURMD_NODENAME:-}" ]] && command -v squeue >/dev/null; then
     echo "jobs on ${SLURMD_NODENAME}:"
-    squeue -h -w "${SLURMD_NODENAME}" -o "  %i %u %P cpus=%C %b" || true
+    timeout 5 squeue -h -w "${SLURMD_NODENAME}" -o "  %i %u %P cpus=%C %b" || true
 fi
