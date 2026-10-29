@@ -162,10 +162,13 @@ def test_quality_only_when_expected(tmp_path):
     run = make_run(tmp_path)
     assert check_run.check_run(run) == []
     assert any("quality.json unreadable" in p for p in check_run.check_run(run, expect_quality=True))
-    (run / "quality.json").write_text(json.dumps({"clip_vitl": 26.0}))
+    quality = {"clip_vitg": 30.15, "clip_vitl": 26.05, "kid_mean": 0.01, "fid_skipped": "2 COCO images"}
+    (run / "quality.json").write_text(json.dumps({**quality, "clip_vitg": None}))
     (run / "quality_per_image.csv").write_text("id,clip_vitg,clip_vitl\n0,30.1,26.0\n1,30.2,26.1\n")
     assert check_run.check_run(run, expect_quality=True) == ["quality.json has no clip_vitg"]
-    (run / "quality.json").write_text(json.dumps({"clip_vitg": 30.15, "clip_vitl": 26.05}))
+    (run / "quality.json").write_text(json.dumps({k: v for k, v in quality.items() if k != "fid_skipped"}))
+    assert check_run.check_run(run, expect_quality=True) == ["quality.json has neither fid nor fid_skipped"]
+    (run / "quality.json").write_text(json.dumps(quality))
     assert check_run.check_run(run, expect_quality=True) == []
     (run / "quality_per_image.csv").write_text("id,clip_vitg,clip_vitl\n1,30.2,26.1\n0,30.1,26.0\n")
     assert check_run.check_run(run, expect_quality=True) == [

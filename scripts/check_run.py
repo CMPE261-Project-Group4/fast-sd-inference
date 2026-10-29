@@ -5,7 +5,8 @@ with no extras, and decodes and isn't blank; perf.json has the fields the summar
 including NFE, stage times and the run environment, with the TF32 flags the config asked for;
 timings.jsonl has one row per batch with the same NFE, and stage times that add up to between
 90% and 101% of the batch's end-to-end time; with --expect-quality, quality.json has both CLIP
-Scores and quality_per_image.csv has a row per image. Every problem is listed, not just the
+Scores, and KID and FID or the reason each was skipped, and quality_per_image.csv has a row
+per image. Every problem is listed, not just the
 first, and the exit status is non-zero if any run fails.
 
 Example:
@@ -144,6 +145,9 @@ def check_quality(run_dir: Path, ids: list[int]) -> list[str]:
         return [f"quality.json unreadable: {type(e).__name__}: {e}"]
     problems = [f"quality.json has no {key}" for key in QUALITY_KEYS
                 if not isinstance(quality.get(key), (int, float)) or isinstance(quality.get(key), bool)]
+    for key, value in (("kid", "kid_mean"), ("fid", "fid")):
+        if value not in quality and f"{key}_skipped" not in quality:
+            problems.append(f"quality.json has neither {value} nor {key}_skipped")
     try:
         with open(run_dir / "quality_per_image.csv", newline="") as f:
             rows = list(csv.DictReader(f))

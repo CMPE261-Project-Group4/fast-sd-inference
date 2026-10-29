@@ -2,6 +2,11 @@
 
 Example:
     python scripts/summarize.py --runs "results/*" --out report/figures
+
+One row per run directory with a perf.json, plus its quality.json if evaluated. ``run`` is the
+directory relative to the runs' common parent, since names repeat across result sets (two
+"baseline" runs, say). ``speedup`` is the --baseline run's latency over each run's; without
+--baseline, the run named "baseline", if there is exactly one.
 """
 
 from __future__ import annotations
@@ -9,6 +14,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 from pathlib import Path
 
 import matplotlib
@@ -19,25 +25,35 @@ import pandas as pd  # noqa: E402
 from PIL import Image  # noqa: E402
 
 COLUMNS = [
-    "name", "batch_size", "latency_per_image_s", "speedup", "throughput_img_per_s",
-    "peak_mem_gb", "clip_vitg", "clip_vitl", "lpips_to_baseline", "fid",
+    "run", "name", "batch_size", "latency_per_image_s", "speedup", "throughput_img_per_s", "peak_mem_gb",
+    "nfe", "nfe_full", "t_text_s", "t_unet_s", "t_vae_s",
+    "clip_vitg", "clip_vitl", "kid_mean", "kid_std", "lpips_to_baseline", "fid", "node", "gpu",
 ]
 
 
-def collect(run_dirs: list[Path]) -> pd.DataFrame:
+def collect(run_dirs: list[Path], baseline: Path | None = None) -> pd.DataFrame:
+    run_dirs = [d for d in run_dirs if (d / "perf.json").exists()]
+    if not run_dirs:
+        return pd.DataFrame()
+    root = Path(os.path.commonpath([d.resolve().parent for d in run_dirs]))
     rows = []
     for d in run_dirs:
-        if not (d / "perf.json").exists():
-            continue
         row = json.loads((d / "perf.json").read_text())
-        row.pop("env", None)
+        env = row.pop("env", None) or {}
+        row.update(run=str(d.resolve().relative_to(root)), node=env.get("node"), gpu=env.get("gpu"),
+                   _path=d.resolve())
         if (d / "quality.json").exists():
-            row.update(json.loads((d / "quality.json").read_text()))
+            row.update({k: v for k, v in json.loads((d / "quality.json").read_text()).items() if k != "name"})
         rows.append(row)
     df = pd.DataFrame(rows)
-    if "baseline" in set(df["name"]):
-        base_lat = df.loc[df["name"] == "baseline", "latency_per_image_s"].item()
-        df["speedup"] = base_lat / df["latency_per_image_s"]
+    if baseline is not None:
+        base = df[df["_path"] == baseline.resolve()]
+        if base.empty:
+            raise SystemExit(f"--baseline {baseline} isn't one of the runs")
+    else:
+        base = df[df["name"] == "baseline"]
+    if len(base) == 1:
+        df["speedup"] = base["latency_per_image_s"].item() / df["latency_per_image_s"]
     return df[[c for c in COLUMNS if c in df.columns]].sort_values("latency_per_image_s")
 
 
@@ -48,7 +64,7 @@ def plot_tradeoff(df: pd.DataFrame, out: Path) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.scatter(d["latency_per_image_s"], d["clip_vitg"])
     for _, r in d.iterrows():
-        ax.annotate(r["name"], (r["latency_per_image_s"], r["clip_vitg"]), fontsize=7,
+        ax.annotate(r["run"], (r["latency_per_image_s"], r["clip_vitg"]), fontsize=7,
                     xytext=(3, 3), textcoords="offset points")
     ax.set_xlabel("Latency per image (s)")
     ax.set_ylabel("CLIP Score (ViT-g/14)")
@@ -64,7 +80,7 @@ def plot_memory(df: pd.DataFrame, out: Path) -> None:
         return
     d = df.dropna(subset=["peak_mem_gb"]).sort_values("peak_mem_gb")
     fig, ax = plt.subplots(figsize=(7, max(3, 0.3 * len(d))))
-    ax.barh(d["name"], d["peak_mem_gb"])
+    ax.barh(d["run"], d["peak_mem_gb"])
     ax.set_xlabel("Peak GPU memory (GB)")
     fig.tight_layout()
     fig.savefig(out / "peak_memory.png", dpi=200)
@@ -83,25 +99,29 @@ def image_grid(results_root: Path, runs: list[str], ids: list[int], out_file: Pa
     print(f"grid columns: {runs} -> {out_file}")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs", nargs="+", default=["results/*"])
-    ap.add_argument("--out", default="report/figures")
+    ap.add_argument("--baseline", type=Path, help="Run directory the speedups are relative to")
+    ap.add_argument("--csv", type=Path, default=Path("results/summary.csv"), help="Where the table goes")
+    ap.add_argument("--out", default="report/figures", help="Where the plots and grid go")
     ap.add_argument("--grid-runs", nargs="+",
                     default=["baseline", "steps_20", "ddim_20", "fp16", "deepcache_i3", "combined_all"])
     ap.add_argument("--grid-ids", nargs="+", type=int, default=[0, 1, 2, 3])
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     run_dirs = sorted({Path(p) for pat in args.runs for p in glob.glob(pat) if Path(p).is_dir()})
-    df = collect(run_dirs)
+    df = collect(run_dirs, args.baseline)
     if df.empty:
         print("No runs with perf.json found.")
         return
 
-    df.to_csv("results/summary.csv", index=False)
-    print(df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    args.csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(args.csv, index=False)
+    print(f"Wrote {args.csv}")
+    print(df.to_string(index=False, float_format=lambda x: f"{x:.4g}"))
     plot_tradeoff(df, out)
     plot_memory(df, out)
 

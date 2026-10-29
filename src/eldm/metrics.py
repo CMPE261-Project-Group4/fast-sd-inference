@@ -1,4 +1,4 @@
-"""Image-quality metrics: CLIP Score, FID, and LPIPS relative to the baseline.
+"""Image-quality metrics: CLIP Score, KID and FID, and LPIPS relative to the baseline.
 
 Every model loads offline from the pinned caches (eldm.assets): COE-HPC3 has no internet.
 """
@@ -16,6 +16,11 @@ from .assets import hf_snapshot_dir
 
 # Encoders from a list of PIL images, or of prompts, to one embedding per item.
 Encoder = Callable[[list], torch.Tensor]
+
+# KID's subsets: 100 random subsets of min(1000, n) images (torchmetrics' default size, the
+# usual choice in the KID paper). FID is biased at small n, so it's only reported from 5,000.
+KID_MAX_SUBSET = 1000
+FID_MIN_IMAGES = 5000
 
 
 def load_image(path: str | Path, size: int | None = None) -> torch.Tensor:
@@ -108,16 +113,55 @@ def _clip_vitl14(device: str) -> tuple[Encoder, Encoder]:
     return encode_images, encode_texts
 
 
-@torch.no_grad()
-def fid(generated: list[Path], reference: list[Path], device: str, batch_size: int = 32) -> float:
-    from torchmetrics.image.fid import FrechetInceptionDistance
+def kid_subset_size(n: int) -> int:
+    return min(KID_MAX_SUBSET, n)
 
-    metric = FrechetInceptionDistance(feature=2048).to(device)
-    for paths, real in ((reference, True), (generated, False)):
-        for chunk in _batched(paths, batch_size):
-            imgs = torch.stack([load_image(p, size=512) for p in chunk]).to(device)
-            metric.update(imgs, real=real)
-    return metric.compute().item()
+
+class InceptionMetrics:
+    """KID, and FID from FID_MIN_IMAGES images, of generated images against one fixed set of real
+    images (Inception-v3 pool features, torch-fidelity's weights). The real images' features are
+    computed once and reused for every run scored against them. Images are center-cropped and
+    resized to 512x512 first: the COCO photos aren't square.
+    """
+
+    def __init__(self, reference: list[Path], device: str, batch_size: int = 32) -> None:
+        from torchmetrics.image.fid import FrechetInceptionDistance
+        from torchmetrics.image.kid import KernelInceptionDistance
+
+        if len(reference) < 2:
+            raise ValueError(f"KID needs at least 2 real images, got {len(reference)}")
+        self.num_real, self.device, self.batch_size = len(reference), device, batch_size
+        # reset_real_features=False: reset() clears only the generated images' features.
+        self.metrics = {"kid": KernelInceptionDistance(
+            feature=2048, subset_size=kid_subset_size(len(reference)), reset_real_features=False)}
+        if len(reference) >= FID_MIN_IMAGES:
+            self.metrics["fid"] = FrechetInceptionDistance(feature=2048, reset_real_features=False)
+        for metric in self.metrics.values():
+            metric.to(device)
+        self._update(reference, real=True)
+
+    @torch.no_grad()
+    def _update(self, paths: list[Path], real: bool) -> None:
+        for chunk in _batched(paths, self.batch_size):
+            imgs = torch.stack([load_image(p, size=512) for p in chunk]).to(self.device)
+            for metric in self.metrics.values():
+                metric.update(imgs, real=real)
+
+    def score(self, generated: list[Path], seed: int = 0) -> dict[str, float]:
+        """kid_mean and kid_std (and fid, if the reference set is large enough). The images pair
+        one to one with the reference, so the counts must match. KID's subsets are drawn with
+        torch's global generator, seeded here so scores repeat."""
+        if len(generated) != self.num_real:
+            raise ValueError(f"{len(generated)} generated images for {self.num_real} real ones")
+        for metric in self.metrics.values():
+            metric.reset()
+        self._update(generated, real=False)
+        torch.manual_seed(seed)
+        kid_mean, kid_std = self.metrics["kid"].compute()
+        out = {"kid_mean": float(kid_mean), "kid_std": float(kid_std)}
+        if "fid" in self.metrics:
+            out["fid"] = float(self.metrics["fid"].compute())
+        return out
 
 
 @torch.no_grad()
