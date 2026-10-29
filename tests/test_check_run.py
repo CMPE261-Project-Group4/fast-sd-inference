@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -182,3 +183,71 @@ def test_unreadable_config_fails(tmp_path):
     (run / "config.yaml").unlink()
     problems = check_run.check_run(run)
     assert len(problems) == 1 and "config.yaml" in problems[0]
+
+
+def make_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Two runs of the same prompts, B a byte-for-byte copy of A."""
+    a = make_run(tmp_path / "debug_a", n=3)
+    b = tmp_path / "debug_b" / "baseline"
+    shutil.copytree(a, b)
+    return a, b
+
+
+def nudge(image: Path, by: int = 1) -> None:
+    pixels = np.asarray(Image.open(image)).copy()
+    pixels[0, 0, 0] = (int(pixels[0, 0, 0]) + by) % 256
+    Image.fromarray(pixels).save(image)
+
+
+def write_lpips(run: Path, baseline: Path, scores: list[float]) -> None:
+    (run / "quality.json").write_text(json.dumps({"baseline": str(baseline.resolve())}))
+    (run / "quality_per_image.csv").write_text(
+        "id,clip_vitg,lpips_to_baseline\n" + "".join(f"{i},30.0,{s}\n" for i, s in enumerate(scores)))
+
+
+def test_compare_identical_runs_pass(tmp_path, capsys):
+    a, b = make_pair(tmp_path)
+    assert check_run.compare_runs(a, b) == ([], {"images": 3, "identical": 3, "max_pixel_diff": 0})
+    assert check_run.main(["--compare", str(a), str(b)]) == 0
+    assert "3 of 3 images identical, largest pixel difference 0" in capsys.readouterr().out
+
+
+def test_compare_small_differences_need_lpips_against_a(tmp_path):
+    a, b = make_pair(tmp_path)
+    nudge(b / "images" / "0001.png", by=3)
+    problems, report = check_run.compare_runs(a, b)
+    assert report == {"images": 3, "identical": 2, "max_pixel_diff": 3}
+    assert problems == [f"1 images differ, and B has no quality files: run evaluate_quality.py on {b}"
+                        f" with --baseline {a}"]
+    write_lpips(b, tmp_path / "elsewhere", [0.0, 0.004, 0.0])
+    assert "B's LPIPS is against" in check_run.compare_runs(a, b)[0][0]
+    write_lpips(b, a, [0.0, 0.004, 0.0])
+    problems, report = check_run.compare_runs(a, b)
+    assert problems == [] and report["max_lpips_differing"] == 0.004
+    write_lpips(b, a, [0.0, 0.05, 0.0])
+    assert check_run.compare_runs(a, b)[0] == [
+        "1 of 1 differing images have LPIPS >= 0.01 against A (or none), e.g. 0001.png: 0.05"]
+    assert check_run.main(["--compare", str(a), str(b)]) == 1
+
+
+@pytest.mark.parametrize("defect, expected", [
+    ("missing", "1 images are in only one run, e.g. 0002.png"),
+    ("nfe", "nfe_full differs: 51 in A, 17 in B"),
+    ("size", "0000.png is (64, 64, 3) in A, (32, 32, 3) in B"),
+])
+def test_compare_defects_fail(tmp_path, defect, expected):
+    a, b = make_pair(tmp_path)
+    if defect == "missing":
+        (b / "images" / "0002.png").unlink()
+    elif defect == "nfe":
+        update_json(b / "perf.json", nfe_full=17)
+    elif defect == "size":
+        Image.fromarray(np.zeros((32, 32, 3), np.uint8) + 9).save(b / "images" / "0000.png")
+    assert expected in check_run.compare_runs(a, b)[0]
+
+
+def test_compare_or_runs_not_both(tmp_path):
+    a, b = make_pair(tmp_path)
+    for argv in ([], ["--compare", str(a), str(b), str(a)]):
+        with pytest.raises(SystemExit):
+            check_run.main(argv)

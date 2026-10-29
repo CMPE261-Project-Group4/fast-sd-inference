@@ -41,7 +41,7 @@ cd /data/cmpe261-fa26/group4/$USER/fast-sd-inference && source env/site.sh
 This puts the shared venv's `python` first on your PATH, makes your clone's `src/` importable, sets `umask 002`, keeps caches off `/home` and turns on offline mode.
 
 The loop, the same for every change:
-1. Edit on coe-hpc1, then run `python -m pytest -q`.
+1. Edit on coe-hpc1, then run `python -m pytest -q`. Tests that load real models are marked `slow` and skipped; run them by hand with `python -m pytest -q -m slow` (about a minute on CPU, under 2 GB) when you change the metric code.
 2. Write or update the job script, then read it back: paths, resources, `--time`.
 3. Run a **tiny job** first: 2–4 prompts, `--time=00:20:00`.
 4. Follow it with `squeue` and `sacct` at sensible intervals, not every few seconds, and read its log.
@@ -69,10 +69,16 @@ The jobs we have:
 |---|---|---|---|
 | `scripts/hpc/check_env.sbatch` | the shared venv imports in a clean environment | defq, 2 CPUs, 4G, 10 min | ~40 s |
 | `scripts/hpc/check_assets.sbatch` | every model, metric weight and dataset loads with the network blocked | defq, 2 CPUs, 24G, 30 min | ~1.5 min |
-| `scripts/hpc/check_gpu.sbatch` | gate G1: baseline, FP16, DPM-Solver++ 20 and DeepCache N=3 make 2 images each on an A100; `check_run.py` checks them. Outputs in `results/_checks/<jobid>/` | gpuqs, 1× A100, 8 CPUs, 32G, 20 min | ~1 min |
+| `scripts/hpc/check_gpu.sbatch` | gate G1: baseline, FP16, DPM-Solver++ 20 and DeepCache N=3 make 2 images each on an A100; `check_run.py` checks them, including NFE, stage times and the run environment. Outputs in `results/_checks/<jobid>/` | gpuqs, 1× A100, 8 CPUs, 32G, 20 min | ~1 min |
 | `scripts/hpc/gpu_diagnose.sbatch` | why a job can't use its GPU (§7) | gpuqs, 1× A100, 2 CPUs, 8G, 10 min | ~20 s |
 
-Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A100, 20 minutes by default. For a full run, pass `sbatch --time=…`.
+Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A100, 20 minutes by default. For a full run, pass `sbatch --time=…`. To run on a subset of the frozen prompts, pass `--prompts-file data/prompts/subsets/<name>.jsonl`; give each result set its own `--output-root`:
+```bash
+sbatch --exclude=cs002 --time=00:30:00 scripts/hpc/run_gpu.slurm configs/experiments/00_baseline.yaml \
+    --prompts-file data/prompts/subsets/debug.jsonl --output-root /scratch/cmpe261-fa26/group4/results/p5/debug_a
+```
+
+Quality is evaluated by a second GPU job, `scripts/hpc/evaluate.slurm <results_dir> <baseline_run_dir>`: CLIP Score, KID, LPIPS against the baseline (and FID from 5,000 COCO images) for every run under `<results_dir>`, then `check_run.py --expect-quality` and `summarize.py` into `<results_dir>/summary/`. One A100, 30 minutes by default.
 
 **Add `--exclude=cs002` to every GPU job** until the admins fix its GPU 0 (§7).
 
@@ -199,7 +205,12 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `scripts/hpc/job_prelude.sh` | the common start of every job: clean env, `site.sh`, threads, `$STAGE`, logging |
 | `scripts/hpc/gpu_diagnose.sbatch` | when a job can't use its GPU: tells a broken GPU apart from our environment handling (§7) |
 | `scripts/hpc/gpu_check.py`, `check_gpu.sbatch` | gate G1's smoke check: 4 variants × 2 images through `eldm.benchmark.run` |
-| `scripts/check_run.py` | checks run directories: images present, decodable and not blank; `perf.json` complete |
+| `scripts/check_run.py` | checks run directories: images present, decodable and not blank; `perf.json` complete (NFE, stage times, env, TF32 as configured); `timings.jsonl` one row per batch, stage coverage 0.90–1.01; with `--expect-quality`, the quality files. `--compare A B`: B reproduces A (Phase 5's determinism gate) |
+| `src/eldm/probes.py` | hooks inside a pipeline call: `PipelineProbe` counts UNet calls (`nfe`, `nfe_full`), `StageTimer` times the text encoder, UNet loop and VAE decode with CUDA events |
+| `src/eldm/metrics.py` | CLIP Score by hand (ViT-g/14, ViT-L/14), KID and FID (`InceptionMetrics`, reference features reused), per-image LPIPS |
+| `scripts/run_experiments.py` | runs an experiment file's runs; `--only`, `--prompts-file`, `--num-prompts`, `--output-root` |
+| `scripts/evaluate_quality.py`, `scripts/hpc/evaluate.slurm` | quality metrics per run: `quality.json` (means, KID, FID or why skipped) and `quality_per_image.csv`; the job also checks and summarizes |
+| `scripts/summarize.py` | one row per run into `summary.csv` (`--csv`), speedups against `--baseline`, plots and an image grid |
 | `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5. |
 | `data/prompts/eval_prompts.jsonl`, `data/prompts/subsets/` | the frozen prompt set and its subsets; never edit by hand ([data/prompts/README.md](../../data/prompts/README.md)) |
 | `scripts/prepare_prompts.py` | rebuilds the frozen prompt files from the shared datasets (about 3 s on coe-hpc1) |
@@ -216,7 +227,8 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `CUDA error: CUDA-capable device(s) is/are busy or unavailable` on an idle GPU | a broken GPU: GPU 0 on cs002 since at least 2026-10-27 (job 98023). Slurm hands out the lowest free index, so 1-GPU jobs on an otherwise idle cs002 always get it | resubmit with `sbatch --exclude=cs002 …`. On another node, run `scripts/hpc/gpu_diagnose.sbatch` with `--nodelist=<node>` to confirm, then exclude that node and tell the HPC admins the node, GPU index and UUID |
 | `Requested node configuration is not available` | more than 2 CPUs on `defq` | use `-c 2`, or `cpuqs` |
 | `check_env` fails "venv matches requirements.lock" | someone ran pip in the shared venv | when no jobs run, rerun `scripts/hpc/setup_env.sh`, which rebuilds the venv |
-| `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 | use the `CLIPTensorFeatures` adapter in `scripts/hpc/check_assets.py`; Phase 5 settles this |
+| `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 | don't use CLIPScore: `eldm.metrics.ClipScorer` computes CLIP Score by hand (Phase 5). `check_assets.py` keeps the `CLIPTensorFeatures` adapter for its own check |
+| `check_run` says stage coverage is outside (0.9, 1.01) | the three stage times don't add up to the batch's end-to-end time: something else in the pipeline call took over 10% (a slow image save doesn't count; it's outside the timer) | look at that batch in `timings.jsonl`; on a very fast config, the PIL conversion's share can grow, so report it before changing the bound |
 | Timings vary between runs | shared nodes: other jobs use the CPUs; GPUs aren't isolated | set thread counts; repeat runs; compare runs on the same node |
 | `/home` quota or "No space left" errors | caches went to `~/.cache` | `source env/site.sh` before running anything |
-| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; `torch_dtype is deprecated`; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache" | nothing to do |
+| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache" | nothing to do |

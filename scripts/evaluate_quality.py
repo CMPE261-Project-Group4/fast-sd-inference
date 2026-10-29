@@ -81,6 +81,8 @@ def evaluate(run_dir: Path, args, device: str, scorers: dict[str, ClipScorer],
 
     result = {"name": cfg["name"], "num_images": len(images)}
     result.update({key: statistics.mean(values) for key, values in per_image.items() if key != "id"})
+    if args.baseline:
+        result["baseline"] = str(Path(args.baseline).resolve())  # what lpips_to_baseline compares with
     result.update(realism(images, prompts, Path(args.coco_images), device, references))
     rows = [dict(zip(per_image, values)) for values in zip(*per_image.values())]
     return result, rows

@@ -9,8 +9,14 @@ Scores, and KID and FID or the reason each was skipped, and quality_per_image.cs
 per image. Every problem is listed, not just the
 first, and the exit status is non-zero if any run fails.
 
-Example:
+--compare RUN_A RUN_B checks that B reproduces A (Phase 5's determinism gate): the same image
+ids and NFE, and every image pixel-identical, or else each differing one under LPIPS 0.01
+against A's image. That LPIPS comes from B's quality_per_image.csv, so evaluate B with
+--baseline A first. It reports how many images are identical and the largest pixel difference.
+
+Examples:
     python scripts/check_run.py --require-gpu A100 /scratch/cmpe261-fa26/group4/results/_checks/<jobid>/*/
+    python scripts/check_run.py --compare "$ELDM_RESULTS"/p5/debug_{a,b}/baseline
 """
 
 from __future__ import annotations
@@ -40,6 +46,9 @@ STAGE_KEYS = ("t_text_s", "t_unet_s", "t_vae_s")
 # tokenizing, setting up latents and converting to PIL: a few ms. Over 1 is timer noise.
 COVERAGE_RANGE = (0.90, 1.01)
 QUALITY_KEYS = ("clip_vitg", "clip_vitl")
+# Largest LPIPS to A at which a differing image of B still counts as the same image: far below
+# the change from any optimization (G1's images differed visibly at every one).
+LPIPS_SAME = 0.01
 
 
 def _number_ok(value) -> bool:
@@ -174,13 +183,92 @@ def check_run(run_dir: Path, expect_quality: bool = False, require_gpu: str | No
     return problems
 
 
+def _read_rgb(path: Path) -> np.ndarray:
+    with Image.open(path) as im:
+        return np.asarray(im.convert("RGB"), dtype=np.int16)
+
+
+def compare_runs(run_a: Path, run_b: Path) -> tuple[list[str], dict]:
+    """Problems if run B doesn't reproduce run A (an empty list means it does), and a report."""
+    problems = []
+    names = {}
+    for label, run in (("A", run_a), ("B", run_b)):
+        names[label] = {p.name for p in (run / "images").glob("*.png")}
+        if not names[label]:
+            problems.append(f"{label} ({run}) has no images")
+    if only := sorted(names["A"] ^ names["B"]):
+        problems.append(f"{len(only)} images are in only one run, e.g. {only[0]}")
+    try:
+        perf = [json.loads((run / "perf.json").read_text()) for run in (run_a, run_b)]
+    except (OSError, json.JSONDecodeError) as e:
+        problems.append(f"perf.json unreadable: {type(e).__name__}: {e}")
+    else:
+        for key in ("nfe", "nfe_full"):
+            if perf[0].get(key) != perf[1].get(key):
+                problems.append(f"{key} differs: {perf[0].get(key)} in A, {perf[1].get(key)} in B")
+
+    common = sorted(names["A"] & names["B"])
+    differing, max_diff = [], 0
+    for name in common:
+        a, b = _read_rgb(run_a / "images" / name), _read_rgb(run_b / "images" / name)
+        if a.shape != b.shape:
+            problems.append(f"{name} is {a.shape} in A, {b.shape} in B")
+            continue
+        if diff := int(np.abs(a - b).max()):
+            differing.append(name)
+            max_diff = max(max_diff, diff)
+    report = {"images": len(common), "identical": len(common) - len(differing), "max_pixel_diff": max_diff}
+    if differing:
+        lpips, problem = _lpips_to(run_b, run_a)
+        if problem:
+            problems.append(f"{len(differing)} images differ, and {problem}")
+        else:
+            scores = [lpips.get(int(name[:-4])) for name in differing]
+            report["max_lpips_differing"] = max((s for s in scores if s is not None), default=None)
+            if over := [(n, s) for n, s in zip(differing, scores) if s is None or s >= LPIPS_SAME]:
+                problems.append(f"{len(over)} of {len(differing)} differing images have LPIPS >= {LPIPS_SAME}"
+                                f" against A (or none), e.g. {over[0][0]}: {over[0][1]}")
+    return problems, report
+
+
+def _lpips_to(run: Path, baseline: Path) -> tuple[dict[int, float], str | None]:
+    """Each image's LPIPS to ``baseline``'s, from run's quality files, or why they can't say."""
+    hint = f"run evaluate_quality.py on {run} with --baseline {baseline}"
+    try:
+        quality = json.loads((run / "quality.json").read_text())
+        with open(run / "quality_per_image.csv", newline="") as f:
+            rows = list(csv.DictReader(f))
+    except (OSError, json.JSONDecodeError):
+        return {}, f"B has no quality files: {hint}"
+    if quality.get("baseline") != str(baseline.resolve()):
+        return {}, f"B's LPIPS is against {quality.get('baseline')}, not A: {hint}"
+    if not rows or "lpips_to_baseline" not in rows[0]:
+        return {}, f"B's quality_per_image.csv has no lpips_to_baseline: {hint}"
+    return {int(r["id"]): float(r["lpips_to_baseline"]) for r in rows}, None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("runs", nargs="+", type=Path, help="Run directories")
+    ap.add_argument("runs", nargs="*", type=Path, help="Run directories")
     ap.add_argument("--expect-quality", action="store_true",
                     help="Require quality.json with CLIP Scores, and quality_per_image.csv")
     ap.add_argument("--require-gpu", help="Substring the GPU name must contain, e.g. A100")
+    ap.add_argument("--compare", nargs=2, type=Path, metavar=("RUN_A", "RUN_B"),
+                    help="Check that RUN_B reproduces RUN_A, instead of checking runs")
     args = ap.parse_args(argv)
+    if bool(args.runs) == bool(args.compare):
+        ap.error("give run directories, or --compare RUN_A RUN_B")
+
+    if args.compare:
+        problems, report = compare_runs(*args.compare)
+        status = "FAIL" if problems else "ok  "
+        lpips = report.get("max_lpips_differing")
+        print(f"  {status}  {args.compare[1]} reproduces {args.compare[0]}: {report['identical']} of"
+              f" {report['images']} images identical, largest pixel difference {report['max_pixel_diff']}"
+              + (f", largest LPIPS of the differing ones {lpips:.4f}" if lpips is not None else ""))
+        for p in problems:
+            print(f"          {p}")
+        return 1 if problems else 0
 
     failed = 0
     for run_dir in args.runs:

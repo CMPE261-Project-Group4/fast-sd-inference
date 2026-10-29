@@ -128,7 +128,7 @@ def test_evaluate_lpips_against_the_baseline(tmp_path, monkeypatch):
     monkeypatch.setattr(evaluate_quality, "lpips_to_baseline", fake_lpips)
     result, rows = evaluate_quality.evaluate(run, args(baseline=str(base)), "cpu", {"vitg": fake_scorer()}, {})
     assert seen == {"images": ["fp16"] * 3, "baseline": ["0000.png", "0001.png", "0002.png"]}
-    assert result["lpips_to_baseline"] == pytest.approx(0.2)
+    assert result["lpips_to_baseline"] == pytest.approx(0.2) and result["baseline"] == str(base.resolve())
     assert [r["lpips_to_baseline"] for r in rows] == [0.0, 0.2, 0.4]
     assert list(rows[0]) == ["id", "clip_vitg", "lpips_to_baseline"]
 
