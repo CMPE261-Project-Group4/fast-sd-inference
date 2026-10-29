@@ -1,4 +1,4 @@
-"""Timed generation loop: latency, peak GPU memory, throughput, UNet calls (NFE)."""
+"""Timed generation loop: latency, peak GPU memory, throughput, UNet calls (NFE), stage times."""
 
 from __future__ import annotations
 
@@ -17,10 +17,11 @@ import yaml
 from tqdm import tqdm
 
 from .pipeline import build_pipeline
-from .probes import PipelineProbe
+from .probes import PipelineProbe, StageTimer
 from .prompts import Prompt, load_prompts
 
 ROOT = Path(__file__).resolve().parents[2]
+STAGE_KEYS = ("t_text_s", "t_unet_s", "t_vae_s")
 
 
 def _sync(device: str) -> None:
@@ -109,7 +110,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
     pipe, _helper, device = build_pipeline(cfg)
     cuda = device == "cuda"
     env = _env_info(device, pipe)
-    probe = PipelineProbe(pipe)
+    probe, timer = PipelineProbe(pipe), StageTimer(pipe, device)
 
     for i in range(cfg["warmup_batches"]):
         _generate(pipe, cfg, batches[i % len(batches)], device)
@@ -125,6 +126,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
             if cuda:
                 torch.cuda.reset_peak_memory_stats()
             probe.reset()
+            timer.reset()
             _sync(device)
             t0 = time.perf_counter()
             images = _generate(pipe, cfg, batch, device)
@@ -134,7 +136,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
             peak = torch.cuda.max_memory_allocated() if cuda else None
             n_images += len(images)
             record = {"ids": [p.id for p in batch], "latency_s": dt, "peak_mem_bytes": peak,
-                      "nfe": probe.nfe, "nfe_full": probe.nfe_full}
+                      "nfe": probe.nfe, "nfe_full": probe.nfe_full, **timer.seconds()}
             records.append(record)
             log.write(json.dumps(record) + "\n")
 
@@ -155,16 +157,23 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
         # UNet calls per pipeline call (see eldm.probes).
         "nfe": _per_call([r["nfe"] for r in records]),
         "nfe_full": _per_call([r["nfe_full"] for r in records]),
-        "env": env,
     }
+    # Per-image stage times, like latency_per_image_s, and the share of the end-to-end time
+    # they account for; the rest is tokenizing, setting up latents and converting to PIL.
+    if all(r[key] is not None for r in records for key in STAGE_KEYS):
+        stage_totals = {key: sum(r[key] for r in records) for key in STAGE_KEYS}
+        perf.update({key: t / n_images for key, t in stage_totals.items()})
+        perf["stage_coverage"] = sum(stage_totals.values()) / total
     if cuda:
         perf["model_mem_gb"] = model_mem / 1024**3
         perf["peak_mem_gb"] = max(r["peak_mem_bytes"] for r in records) / 1024**3
+    perf["env"] = env
 
     with open(out_dir / "perf.json", "w") as f:
         json.dump(perf, f, indent=2)
 
     probe.remove()
+    timer.remove()
     del pipe
     if cuda:
         torch.cuda.empty_cache()

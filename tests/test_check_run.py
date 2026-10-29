@@ -36,14 +36,20 @@ def make_run(tmp_path: Path, n: int = 2, gpu: str = "NVIDIA A100-PCIE-40GB") -> 
         Image.fromarray(rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)).save(run / "images" / f"{p.id:04d}.png")
     (run / "perf.json").write_text(json.dumps({
         "name": "baseline", "num_images": n, "latency_per_image_s": 2.5, "throughput_img_per_s": 0.4,
-        "nfe": 51, "nfe_full": 51, "peak_mem_gb": 3.2, "env": {**ENV, "gpu": gpu},
+        "nfe": 51, "nfe_full": 51, **STAGES, "stage_coverage": 0.98, "peak_mem_gb": 3.2, "env": {**ENV, "gpu": gpu},
     }))
-    write_timings(run, [{"ids": [p.id], "latency_s": 2.5, "nfe": 51, "nfe_full": 51} for p in prompts])
+    write_timings(run, [{"ids": [p.id]} for p in prompts])
     return run
 
 
+# Per-batch stage times adding up to 98% of a 2.5 s batch.
+STAGES = {"t_text_s": 0.02, "t_unet_s": 2.36, "t_vae_s": 0.07}
+ROW = {"latency_s": 2.5, "nfe": 51, "nfe_full": 51, **STAGES}
+
+
 def write_timings(run: Path, rows: list[dict]) -> None:
-    (run / "timings.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    """timings.jsonl with each row's fields over ROW's."""
+    (run / "timings.jsonl").write_text("".join(json.dumps({**ROW, **r}) + "\n" for r in rows))
 
 
 def update_json(path: Path, **changes) -> None:
@@ -64,7 +70,7 @@ def test_num_prompts_limits_expected_images(tmp_path):
     cfg = yaml.safe_load((run / "config.yaml").read_text())
     (run / "config.yaml").write_text(yaml.safe_dump({**cfg, "num_prompts": 2}))
     update_json(run / "perf.json", num_images=2)
-    write_timings(run, [{"nfe": 51, "nfe_full": 51}] * 2)
+    write_timings(run, [{}] * 2)
     assert check_run.check_run(run) == []
 
 
@@ -103,6 +109,8 @@ def test_image_defects_fail(tmp_path, defect, expected):
     ({"nfe_full": 0}, "nfe_full is 0"),
     ({"nfe_full": 52}, "nfe_full 52 > nfe 51"),
     ({"env": {**ENV, "gpu": "A100", "tf32_cudnn": True}}, "TF32 cudnn was True in the run, config asks for False"),
+    ({"t_vae_s": None}, "t_vae_s is None"),
+    ({"stage_coverage": 0.85}, "stage_coverage is 0.85, outside (0.9, 1.01)"),
 ])
 def test_perf_defects_fail(tmp_path, changes, expected):
     run = make_run(tmp_path)
@@ -119,10 +127,13 @@ def test_cpu_run_needs_no_gpu_fields(tmp_path):
 
 
 @pytest.mark.parametrize("rows, expected", [
-    ([{"nfe": 51, "nfe_full": 51}], "1 rows, expected 2 batches"),
-    ([{"nfe": 51, "nfe_full": 51}, {"nfe": 51, "nfe_full": 17}], "NFE differs between batches"),
-    ([{"nfe": 51, "nfe_full": 60}] * 2, "nfe 51, nfe_full 60"),
-    ([{"latency_s": 2.5}] * 2, "nfe None, nfe_full None"),
+    ([{}], "1 rows, expected 2 batches"),
+    ([{}, {"nfe_full": 17}], "NFE differs between batches"),
+    ([{"nfe_full": 60}] * 2, "nfe 51, nfe_full 60"),
+    ([{"nfe": None, "nfe_full": None}] * 2, "nfe None, nfe_full None"),
+    ([{}, {"t_text_s": None}], "1 rows lack stage times, e.g. row 1"),
+    ([{}, {"t_unet_s": 2.0}], "stage coverage outside (0.9, 1.01) in 1 rows, e.g. row 1: 0.836"),
+    ([{"latency_s": 2.3}, {}], "stage coverage outside (0.9, 1.01) in 1 rows, e.g. row 0: 1.065"),
 ])
 def test_timings_defects_fail(tmp_path, rows, expected):
     run = make_run(tmp_path)
@@ -136,7 +147,7 @@ def test_timings_rows_follow_batch_size(tmp_path):
     cfg = yaml.safe_load((run / "config.yaml").read_text())
     (run / "config.yaml").write_text(yaml.safe_dump({**cfg, "batch_size": 2}))
     assert any("3 rows, expected 2 batches" in p for p in check_run.check_run(run))
-    write_timings(run, [{"nfe": 51, "nfe_full": 51}] * 2)
+    write_timings(run, [{}] * 2)
     assert check_run.check_run(run) == []
 
 

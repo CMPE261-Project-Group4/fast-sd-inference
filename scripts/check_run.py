@@ -2,8 +2,9 @@
 
 For each run: every expected image (from config.yaml's prompts_file and num_prompts) exists,
 with no extras, and decodes and isn't blank; perf.json has the fields the summary needs,
-including NFE and the run environment, with the TF32 flags the config asked for; timings.jsonl
-has one row per batch with the same NFE; with --expect-quality, quality.json has a CLIP
+including NFE, stage times and the run environment, with the TF32 flags the config asked for;
+timings.jsonl has one row per batch with the same NFE, and stage times that add up to between
+90% and 101% of the batch's end-to-end time; with --expect-quality, quality.json has a CLIP
 score. Every problem is listed, not just the first, and the exit status is non-zero if any
 run fails.
 
@@ -32,10 +33,18 @@ MIN_PIXEL_STD = 2.0
 # perf.json env fields every run records (eldm.benchmark._env_info), plus these on CUDA.
 ENV_KEYS = ("node", "torch", "diffusers", "git_commit", "attention", "tf32_matmul", "tf32_cudnn")
 CUDA_ENV_KEYS = ("gpu", "gpu_uuid")
+STAGE_KEYS = ("t_text_s", "t_unet_s", "t_vae_s")
+# The share of a batch's end-to-end time the three stages must account for. The rest is
+# tokenizing, setting up latents and converting to PIL: a few ms. Over 1 is timer noise.
+COVERAGE_RANGE = (0.90, 1.01)
 
 
 def _number_ok(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _coverage_ok(value) -> bool:
+    return _number_ok(value) and COVERAGE_RANGE[0] <= value <= COVERAGE_RANGE[1]
 
 
 def check_images(run_dir: Path, expected: set[str]) -> list[str]:
@@ -76,6 +85,11 @@ def check_perf(run_dir: Path, cfg: dict, n_expected: int, require_gpu: str | Non
             problems.append(f"perf.json {key} is {perf.get(key)!r}")
     if _number_ok(perf.get("nfe")) and _number_ok(perf.get("nfe_full")) and perf["nfe_full"] > perf["nfe"]:
         problems.append(f"perf.json nfe_full {perf['nfe_full']} > nfe {perf['nfe']}")
+    for key in STAGE_KEYS:
+        if not _number_ok(perf.get(key)):
+            problems.append(f"perf.json {key} is {perf.get(key)!r}")
+    if not _coverage_ok(perf.get("stage_coverage")):
+        problems.append(f"perf.json stage_coverage is {perf.get('stage_coverage')!r}, outside {COVERAGE_RANGE}")
     env = perf.get("env") or {}
     cuda = env.get("device") == "cuda"
     for key in ENV_KEYS + (CUDA_ENV_KEYS if cuda else ()):
@@ -93,7 +107,8 @@ def check_perf(run_dir: Path, cfg: dict, n_expected: int, require_gpu: str | Non
 
 
 def check_timings(run_dir: Path, cfg: dict, n_expected: int) -> list[str]:
-    """One timings.jsonl row per batch, each with the same NFE counts."""
+    """One timings.jsonl row per batch, each with the same NFE counts and stage times that
+    account for the batch's end-to-end time."""
     try:
         rows = [json.loads(line) for line in (run_dir / "timings.jsonl").read_text().splitlines() if line.strip()]
     except (OSError, json.JSONDecodeError) as e:
@@ -108,6 +123,14 @@ def check_timings(run_dir: Path, cfg: dict, n_expected: int) -> list[str]:
     for nfe, nfe_full in counts:
         if not (_number_ok(nfe) and _number_ok(nfe_full) and nfe_full <= nfe):
             problems.append(f"timings.jsonl has nfe {nfe!r}, nfe_full {nfe_full!r}")
+    if missing := [i for i, r in enumerate(rows) if not all(_number_ok(r.get(k)) for k in STAGE_KEYS)]:
+        problems.append(f"timings.jsonl: {len(missing)} rows lack stage times, e.g. row {missing[0]}")
+    else:
+        coverage = [sum(r[k] for k in STAGE_KEYS) / r["latency_s"] if _number_ok(r.get("latency_s"))
+                    else math.nan for r in rows]
+        if bad := [(i, c) for i, c in enumerate(coverage) if not _coverage_ok(c)]:
+            problems.append(f"timings.jsonl: stage coverage outside {COVERAGE_RANGE} in {len(bad)} rows,"
+                            f" e.g. row {bad[0][0]}: {bad[0][1]:.3f}")
     return problems
 
 
@@ -154,7 +177,9 @@ def main(argv: list[str] | None = None) -> int:
             perf = json.loads((run_dir / "perf.json").read_text())
             env = perf.get("env") or {}
             print(f"  ok    {run_dir}: {perf['num_images']} images, {perf['latency_per_image_s']:.2f} s/image,"
-                  f" NFE {perf['nfe']} ({perf['nfe_full']} full) on {env.get('gpu') or env.get('device')}"
+                  f" NFE {perf['nfe']} ({perf['nfe_full']} full), text/UNet/VAE"
+                  f" {perf['t_text_s']:.3f}/{perf['t_unet_s']:.2f}/{perf['t_vae_s']:.3f} s"
+                  f" (coverage {perf['stage_coverage']:.3f}) on {env.get('gpu') or env.get('device')}"
                   f" ({env.get('node')})")
     print(f"{failed} of {len(args.runs)} run(s) failed." if failed else f"All {len(args.runs)} run(s) passed.")
     return 1 if failed else 0
