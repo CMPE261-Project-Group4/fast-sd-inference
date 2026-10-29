@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
 
     runs = load_experiment(args.experiment)
     if args.only:
+        if unknown := sorted(set(args.only) - {r["name"] for r in runs}):
+            ap.error(f"--only: no run named {', '.join(unknown)} in {args.experiment}")
         runs = [r for r in runs if r["name"] in args.only]
     for cfg in runs:
         if args.prompts_file:

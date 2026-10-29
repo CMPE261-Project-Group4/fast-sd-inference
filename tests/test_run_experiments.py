@@ -35,3 +35,6 @@ def test_defaults_and_only(runs):
     assert len(runs) == 1
     cfg = runs[0]
     assert (cfg["name"], cfg["prompts_file"], cfg["num_prompts"]) == ("fp16", "data/prompts/eval_prompts.jsonl", 4)
+    with pytest.raises(SystemExit):
+        run_experiments.main(["configs/experiments/03_precision.yaml", "--only", "fp61"])
+    assert len(runs) == 1  # a typo in --only runs nothing
