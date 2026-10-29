@@ -162,10 +162,16 @@ def test_quality_only_when_expected(tmp_path):
     run = make_run(tmp_path)
     assert check_run.check_run(run) == []
     assert any("quality.json unreadable" in p for p in check_run.check_run(run, expect_quality=True))
-    (run / "quality.json").write_text(json.dumps({"fid": 12.0}))
-    assert check_run.check_run(run, expect_quality=True) == ["quality.json has no clip_score"]
-    (run / "quality.json").write_text(json.dumps({"clip_score": 30.1}))
+    (run / "quality.json").write_text(json.dumps({"clip_vitl": 26.0}))
+    (run / "quality_per_image.csv").write_text("id,clip_vitg,clip_vitl\n0,30.1,26.0\n1,30.2,26.1\n")
+    assert check_run.check_run(run, expect_quality=True) == ["quality.json has no clip_vitg"]
+    (run / "quality.json").write_text(json.dumps({"clip_vitg": 30.15, "clip_vitl": 26.05}))
     assert check_run.check_run(run, expect_quality=True) == []
+    (run / "quality_per_image.csv").write_text("id,clip_vitg,clip_vitl\n1,30.2,26.1\n0,30.1,26.0\n")
+    assert check_run.check_run(run, expect_quality=True) == [
+        "quality_per_image.csv has 2 rows, not one per image in prompt order"]
+    (run / "quality_per_image.csv").unlink()
+    assert any("quality_per_image.csv unreadable" in p for p in check_run.check_run(run, expect_quality=True))
 
 
 def test_unreadable_config_fails(tmp_path):

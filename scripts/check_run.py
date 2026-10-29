@@ -4,9 +4,9 @@ For each run: every expected image (from config.yaml's prompts_file and num_prom
 with no extras, and decodes and isn't blank; perf.json has the fields the summary needs,
 including NFE, stage times and the run environment, with the TF32 flags the config asked for;
 timings.jsonl has one row per batch with the same NFE, and stage times that add up to between
-90% and 101% of the batch's end-to-end time; with --expect-quality, quality.json has a CLIP
-score. Every problem is listed, not just the first, and the exit status is non-zero if any
-run fails.
+90% and 101% of the batch's end-to-end time; with --expect-quality, quality.json has both CLIP
+Scores and quality_per_image.csv has a row per image. Every problem is listed, not just the
+first, and the exit status is non-zero if any run fails.
 
 Example:
     python scripts/check_run.py --require-gpu A100 /scratch/cmpe261-fa26/group4/results/_checks/<jobid>/*/
@@ -15,6 +15,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import sys
@@ -37,6 +38,7 @@ STAGE_KEYS = ("t_text_s", "t_unet_s", "t_vae_s")
 # The share of a batch's end-to-end time the three stages must account for. The rest is
 # tokenizing, setting up latents and converting to PIL: a few ms. Over 1 is timer noise.
 COVERAGE_RANGE = (0.90, 1.01)
+QUALITY_KEYS = ("clip_vitg", "clip_vitl")
 
 
 def _number_ok(value) -> bool:
@@ -134,12 +136,22 @@ def check_timings(run_dir: Path, cfg: dict, n_expected: int) -> list[str]:
     return problems
 
 
-def check_quality(run_dir: Path) -> list[str]:
+def check_quality(run_dir: Path, ids: list[int]) -> list[str]:
+    """quality.json has the run's CLIP Scores; quality_per_image.csv has a row per id, in order."""
     try:
         quality = json.loads((run_dir / "quality.json").read_text())
     except (OSError, json.JSONDecodeError) as e:
         return [f"quality.json unreadable: {type(e).__name__}: {e}"]
-    return [] if "clip_score" in quality else ["quality.json has no clip_score"]
+    problems = [f"quality.json has no {key}" for key in QUALITY_KEYS
+                if not isinstance(quality.get(key), (int, float)) or isinstance(quality.get(key), bool)]
+    try:
+        with open(run_dir / "quality_per_image.csv", newline="") as f:
+            rows = list(csv.DictReader(f))
+    except OSError as e:
+        return problems + [f"quality_per_image.csv unreadable: {type(e).__name__}: {e}"]
+    if [r.get("id") for r in rows] != [str(i) for i in ids]:
+        problems.append(f"quality_per_image.csv has {len(rows)} rows, not one per image in prompt order")
+    return problems
 
 
 def check_run(run_dir: Path, expect_quality: bool = False, require_gpu: str | None = None) -> list[str]:
@@ -154,14 +166,15 @@ def check_run(run_dir: Path, expect_quality: bool = False, require_gpu: str | No
     problems += check_perf(run_dir, cfg, len(expected), require_gpu)
     problems += check_timings(run_dir, cfg, len(expected))
     if expect_quality:
-        problems += check_quality(run_dir)
+        problems += check_quality(run_dir, [p.id for p in prompts])
     return problems
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("runs", nargs="+", type=Path, help="Run directories")
-    ap.add_argument("--expect-quality", action="store_true", help="Require quality.json with clip_score")
+    ap.add_argument("--expect-quality", action="store_true",
+                    help="Require quality.json with CLIP Scores, and quality_per_image.csv")
     ap.add_argument("--require-gpu", help="Substring the GPU name must contain, e.g. A100")
     args = ap.parse_args(argv)
 

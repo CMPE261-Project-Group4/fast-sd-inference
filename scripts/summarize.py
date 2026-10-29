@@ -20,7 +20,7 @@ from PIL import Image  # noqa: E402
 
 COLUMNS = [
     "name", "batch_size", "latency_per_image_s", "speedup", "throughput_img_per_s",
-    "peak_mem_gb", "clip_score", "lpips_to_baseline", "fid",
+    "peak_mem_gb", "clip_vitg", "clip_vitl", "lpips_to_baseline", "fid",
 ]
 
 
@@ -42,16 +42,16 @@ def collect(run_dirs: list[Path]) -> pd.DataFrame:
 
 
 def plot_tradeoff(df: pd.DataFrame, out: Path) -> None:
-    if "clip_score" not in df:
+    if "clip_vitg" not in df:
         return
     d = df[df["batch_size"] == 1]
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.scatter(d["latency_per_image_s"], d["clip_score"])
+    ax.scatter(d["latency_per_image_s"], d["clip_vitg"])
     for _, r in d.iterrows():
-        ax.annotate(r["name"], (r["latency_per_image_s"], r["clip_score"]), fontsize=7,
+        ax.annotate(r["name"], (r["latency_per_image_s"], r["clip_vitg"]), fontsize=7,
                     xytext=(3, 3), textcoords="offset points")
     ax.set_xlabel("Latency per image (s)")
-    ax.set_ylabel("CLIP Score")
+    ax.set_ylabel("CLIP Score (ViT-g/14)")
     ax.set_title("Quality vs. latency (batch size 1)")
     ax.grid(alpha=0.3)
     fig.tight_layout()

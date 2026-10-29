@@ -101,7 +101,7 @@ for mod, name in [
     ("eldm.prompts", "load_prompts"),
     ("eldm.pipeline", "build_pipeline"),
     ("eldm.benchmark", "run"),
-    ("eldm.metrics", "clip_score"),
+    ("eldm.metrics", "ClipScorer"),
 ]:
     attempt(f"{mod}.{name}", attr(mod, name))
 
