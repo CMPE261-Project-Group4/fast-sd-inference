@@ -35,6 +35,7 @@ def test_build_pipeline_loads_pinned_revision(monkeypatch):
 
     assert calls["model_id"] == cfg["model_id"]
     assert calls["revision"] == cfg["model_revision"]
+    assert calls["dtype"] is torch.float32 and "torch_dtype" not in calls
     assert isinstance(pipe.scheduler, DPMSolverMultistepScheduler)
     assert helper is None and device == "cpu"
 
