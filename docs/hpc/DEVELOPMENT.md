@@ -45,7 +45,7 @@ The loop, the same for every change:
 2. Write or update the job script, then read it back: paths, resources, `--time`.
 3. Run a **tiny job** first: 2–4 prompts, `--time=00:20:00`.
 4. Follow it with `squeue` and `sacct` at sensible intervals, not every few seconds, and read its log.
-5. Check the outputs with a checker script, not by eye. `scripts/check_run.py` arrives in Phase 3.
+5. Check the outputs with a checker script, not by eye: `python scripts/check_run.py <run_dir>... [--require-gpu A100] [--expect-quality]`.
 6. If it failed, read the log, fix the script, and run a new tiny job.
 7. Run the full-size job only after the tiny one passes. Then commit.
 
@@ -69,8 +69,12 @@ The jobs we have:
 |---|---|---|---|
 | `scripts/hpc/check_env.sbatch` | the shared venv imports in a clean environment | defq, 2 CPUs, 4G, 10 min | ~40 s |
 | `scripts/hpc/check_assets.sbatch` | every model, metric weight and dataset loads with the network blocked | defq, 2 CPUs, 24G, 30 min | ~1.5 min |
+| `scripts/hpc/check_gpu.sbatch` | gate G1: baseline, FP16, DPM-Solver++ 20 and DeepCache N=3 make 2 images each on an A100; `check_run.py` checks them. Outputs in `results/_checks/<jobid>/` | gpuqs, 1× A100, 8 CPUs, 32G, 20 min | ~1 min |
+| `scripts/hpc/gpu_diagnose.sbatch` | why a job can't use its GPU (§7) | gpuqs, 1× A100, 2 CPUs, 8G, 10 min | ~20 s |
 
 Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A100, 20 minutes by default. For a full run, pass `sbatch --time=…`.
+
+**Add `--exclude=cs002` to every GPU job** until the admins fix its GPU 0 (§7).
 
 Limits to know (measured; re-check with `sinfo` and `scontrol show partition <name>`):
 
@@ -194,6 +198,8 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `scripts/hpc/check_assets.py`, `check_assets.sbatch` | offline load check: `--quick` on coe-hpc1, `--full` as a CPU job |
 | `scripts/hpc/job_prelude.sh` | the common start of every job: clean env, `site.sh`, threads, `$STAGE`, logging |
 | `scripts/hpc/gpu_diagnose.sbatch` | when a job can't use its GPU: tells a broken GPU apart from our environment handling (§7) |
+| `scripts/hpc/gpu_check.py`, `check_gpu.sbatch` | gate G1's smoke check: 4 variants × 2 images through `eldm.benchmark.run` |
+| `scripts/check_run.py` | checks run directories: images present, decodable and not blank; `perf.json` complete |
 | `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5, once Phase 4's prompt files exist. |
 
 ## 7. Troubleshooting
@@ -211,4 +217,4 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 | use the `CLIPTensorFeatures` adapter in `scripts/hpc/check_assets.py`; Phase 5 settles this |
 | Timings vary between runs | shared nodes: other jobs use the CPUs; GPUs aren't isolated | set thread counts; repeat runs; compare runs on the same node |
 | `/home` quota or "No space left" errors | caches went to `~/.cache` | `source env/site.sh` before running anything |
-| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; `torch_dtype is deprecated` | nothing to do |
+| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; `torch_dtype is deprecated`; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache" | nothing to do |
