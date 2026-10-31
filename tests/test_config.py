@@ -23,6 +23,7 @@ def test_experiment_files_resolve(path):
         assert cfg["scheduler"] in {"pndm", "ddim", "dpmpp_2m", "euler", "euler_a"}
         assert cfg["dtype"] in {"fp32", "fp16"}
         assert "cache_branch_id" in cfg["deepcache"]
+        assert cfg["tf32"] == {"matmul": False, "cudnn": False}
 
 
 def test_run_names_unique_across_files():

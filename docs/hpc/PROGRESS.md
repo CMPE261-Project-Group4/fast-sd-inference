@@ -15,7 +15,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2 Offline assets | `hpc/p2-assets` | everything loads on HPC3 offline | **pass** (2026-10-19, job 92251; job 92223 failed first) |
 | 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | **pass** (2026-10-28, job 98056; job 97329 failed first on a broken GPU) |
 | 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | **pass** (2026-10-28; no job: built and checked on coe-hpc1) |
-| 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | not started |
+| 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | **pass** (2026-10-29, jobs 98329–98332); awaiting Dan's approval |
 | 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | not started |
 | 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | not started |
 | 8 Sweeps (G3) | `hpc/p8-sweeps` | Dan confirms combined settings | not started |
@@ -32,6 +32,97 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-10-27 | 97329 | P3.1 GPU smoke check (`check_gpu.sbatch`, gpuqs, 1× A100, 8 CPUs, 32G) | cs002, GPU 0 | FAILED 1:0 in 20 s. Every variant failed at `pipe.to("cuda")` with "CUDA-capable device(s) is/are busy or unavailable" on an idle GPU |
 | 2026-10-28 | 98023 | P3.2 GPU access diagnostic (`gpu_diagnose.sbatch`, 1× A100, 2 CPUs, 8G) | cs002, GPU 0 | COMPLETED 0:0 in 19 s. GPU 0 can't allocate in any environment, Slurm's raw one included; GPUs 1–3 can. Cause of 97329: a broken GPU, not our code |
 | 2026-10-28 | 98056 | P3.3 GPU smoke check, rerun with `--exclude=cs002` | cs001, GPU 1 | COMPLETED 0:0 in 1m04s, MaxRSS 3.4 GB; all 4 runs pass `check_run.py`; **gate G1 passed** |
+| 2026-10-29 | 98329 | P5.1 GPU check with the Phase 5 measurements (`check_gpu.sbatch`, gpuqs, 1× A100, 8 CPUs, 32G) | cs001, GPU 0 | COMPLETED 0:0 in 2m07s, MaxRSS 3.3 GB; all 4 runs pass `check_run.py`, now including NFE, stage times and the run environment. No other job on the node |
+| 2026-10-29 | 98330 | P5.2 debug run A: `run_gpu.slurm 00_baseline.yaml --prompts-file data/prompts/subsets/debug.jsonl`, into `p5/debug_a` (1× A100, 8 CPUs, 32G, 30 min) | cs001, GPU 0 | COMPLETED 0:0 in 10m00s, MaxRSS 1.7 GB; `baseline` and `baseline_bs4`, 50 images each. Its only neighbour on the node was 98331 |
+| 2026-10-29 | 98331 | P5.3 debug run B: the same, into `p5/debug_b` | cs001, GPU 1 | COMPLETED 0:0 in 9m59s, MaxRSS 1.4 GB; ran alongside 98330 |
+| 2026-10-29 | 98332 | P5.4 `evaluate.slurm p5 p5/debug_a/baseline`, after `afterok:98330:98331` (1× A100, 8 CPUs, 32G, 30 min) | cs001, GPU 0 | COMPLETED 0:0 in 1m13s, MaxRSS 5.7 GB; quality files for all 4 runs, `check_run.py --expect-quality` passes all 4, `p5/summary/` written; **Phase 5 gate passed** |
+
+## Phase 5: Measurement correctness, R4 and D3 (2026-10-29)
+
+### Gate: pass (jobs 98329–98332; awaiting Dan's approval)
+
+Dan submitted the four jobs, all with `--exclude=cs002`. They ran from commit `aaba3a0` with a clean tree (`git_dirty: false` in every `perf.json`), offline, on cs001, with both TF32 flags off. `check_run.py` decides each check.
+
+| Check | How | Result |
+|---|---|---|
+| Every `summary.csv` column filled for the debug runs | P5.4 wrote `p5/summary/summary.csv`, one row per run | **pass**: every column filled for all 4 runs. No run has FID, so `summarize.py` leaves the `fid` column out; each `quality.json` gives the reason in `fid_skipped` ("50 COCO images; FID needs at least 5,000") |
+| Deterministic | `check_run.py --compare debug_a/baseline debug_b/baseline`: two separate jobs on different GPUs (0 and 1), the same 50 prompts and seeds | **pass**: 50 of 50 images pixel-identical (largest difference 0), the same NFE |
+| The stage times add up | `check_run.py`: text + UNet + VAE within 0.90–1.01 of every batch's latency | **pass**: 0.998 on all 4 debug runs, 0.993–0.998 on P5.1's 4 |
+| Not a gate, reported: does batch size change the pixels? | `--compare debug_a/baseline debug_a/baseline_bs4` | **Slightly.** 0 of 50 images identical, largest pixel difference 3 of 255, LPIPS at most 1.7e-5 (mean 8.2e-7). Batch 4 is deterministic itself: `--compare debug_a/baseline_bs4 debug_b/baseline_bs4` gives 50 of 50 identical |
+
+Outputs, locked with `chmod -R a-w`: `/scratch/cmpe261-fa26/group4/results/_checks/98329/` and `/scratch/cmpe261-fa26/group4/results/p5/` (`debug_a`, `debug_b`, `summary`). The compare checks ran on coe-hpc1 (1.5 s each).
+
+### P5.1: the G1 variants, measured (job 98329)
+
+2 smoke prompts each, after the base config's 2 warm-up batches. No other job was on cs001.
+
+| Variant | s/image | Speedup | Peak GB | `nfe` (`nfe_full`) | Text / UNet / VAE, s per image | Coverage |
+|---|---|---|---|---|---|---|
+| baseline: PNDM 50 steps, FP32 | 5.64 | 1.00× | 4.76 | 51 (51) | 0.009 / 5.51 / 0.109 | 0.998 |
+| `fp16` | 1.44 | 3.91× | 2.61 | 51 (51) | 0.009 / 1.38 / 0.040 | 0.993 |
+| `dpmpp_20`: DPM-Solver++ 2M, 20 steps | 2.32 | 2.44× | 4.76 | 20 (20) | 0.009 / 2.19 / 0.109 | 0.996 |
+| `deepcache_i3`: DeepCache, interval 3 | 2.34 | 2.41× | 4.97 | 51 (17) | 0.009 / 2.21 / 0.110 | 0.996 |
+
+With TF32 off, the FP32 runs slowed down: the baseline from G1's 4.13 to 5.64 s/image (+37 %), `dpmpp_20` from 1.67 to 2.32, `deepcache_i3` from 1.74 to 2.34. FP16 doesn't use TF32 and barely moved (1.46 to 1.44), so its speedup grew from 2.84× to 3.91×. These are still 2-image numbers.
+
+### Debug runs: 50 COCO prompts (jobs 98330, 98331, 98332)
+
+**Debug numbers, not results:** 50 prompts, with the two jobs side by side on cs001.
+
+| Run | s/image | Speedup | Peak GB | `nfe` (`nfe_full`) | Text / UNet / VAE, s per image | Coverage |
+|---|---|---|---|---|---|---|
+| `debug_a/baseline` | 5.767 | 1.00× | 4.76 | 51 (51) | 0.009 / 5.638 / 0.111 | 0.998 |
+| `debug_b/baseline` | 5.761 | 1.00× | 4.76 | 51 (51) | 0.009 / 5.631 / 0.111 | 0.998 |
+| `debug_a/baseline_bs4` | 4.832 | 1.19× | 8.77 | 51 (51) | 0.003 / 4.705 / 0.114 | 0.998 |
+| `debug_b/baseline_bs4` | 4.825 | 1.20× | 8.77 | 51 (51) | 0.003 / 4.699 / 0.114 | 0.998 |
+
+The batch-to-batch std was 0.03 s at batch 1. At batch 4 it was 2.49 s, because 50 images make 12 batches of 4 and a last batch of 2.
+
+| Run (A and B identical) | CLIP ViT-g/14 | CLIP ViT-L/14 | KID mean (std) | LPIPS to `debug_a/baseline` |
+|---|---|---|---|---|
+| `baseline` | 30.81 (per image 24.7–44.2) | 27.40 (21.3–34.2) | −0.0033 (2e-7) | 0 |
+| `baseline_bs4` | 30.82 | 27.40 | −0.0033 (2e-7) | 8.2e-7 |
+
+### Commits
+
+- `841c75c feat(perf): pin TF32 flags, log run environment, count NFE`
+- `ea8c1af feat(perf): add per-stage timing with CUDA events`
+- `97582c1 feat(eval): OpenCLIP ViT-g/14 CLIP Score and per-image scores`
+- `966ae3c feat(eval): add KID, gate FID at 5,000 images, load weights offline`
+- `12c11df feat(run): add --prompts-file to run_experiments.py`
+- `c57236e fix(run): reject unknown run names in --only`
+- `33b56ea fix(pipeline): pass dtype= instead of the deprecated torch_dtype=`
+- `aaba3a0 test(hpc): debug-run determinism check`: `check_run.py --compare`, `quality.json` records its LPIPS baseline, and the docs.
+- `docs(hpc): record the Phase 5 jobs and gate` (this commit): the job results in this log, README.md and DEVELOPMENT.md.
+
+### Findings
+
+- **DeepCache 0.1.1 replaces `forward` on the UNet, every down and up block and the mid block** with wrappers that return cached outputs on skipped steps. PyTorch's hooks fire around those wrappers, so a hook on `unet.mid_block` fires on cached steps too. That rules out the mid-block hook proposed in the open issue below. `nfe_full` is counted one level inside, at `unet.mid_block.resnets[0]`, which runs only on full passes. A hook on `unet` counts every call (`nfe`).
+- **PNDM makes 51 UNet calls for 50 steps** (and 6 for 5): with `skip_prk_steps`, its second timestep (961 at 50 steps) runs twice. DDIM and DPM-Solver++ make one call per step.
+- **DeepCache finds the step with `timesteps.index(t)`.** For PNDM's repeated timestep, the second call gets the first one's index. At 50 PNDM steps, DeepCache's full passes are 25 (interval 2), 17 (3) and 11 (5) of 51 calls. Without the repeat, interval 2 would give 26. `nfe_full` measures what actually runs. Its `start_timestep` is never reset between pipeline calls, which is harmless while the first index is 0.
+- **One pipeline call runs the text encoder twice** (the prompt and the empty negative prompt), and the UNet once per step on a doubled batch (classifier-free guidance). The VAE decode is `post_quant_conv`, then `decoder`.
+- **CLIP-L by hand matches torchmetrics.** On the first two COCO val images with their captions, on CPU: 18.40965 and 25.50584 by hand, 18.40965 and 25.50585 with torchmetrics' CLIPScore and Phase 2's adapter (`pytest -m slow`).
+- **KID on 8 real photos** (CPU, real Inception weights): a set against itself scores −0.138 (the unbiased estimator on identical sets), against other photos 0.005. Scoring again gives the same numbers.
+- **The tiny CPU pipeline's stage coverage is 0.912:** with tiny models, tokenizing and converting to PIL take about 9% of the time. The 0.90 bound is for real runs: on the A100, every batch's coverage was 0.993–0.998.
+- **Commit `33b56ea`'s message says 116 tests passed; its own tree passes 110.** The 6 compare-mode tests were in the working tree, not the commit. History isn't rewritten; from now on each commit's count is taken on exactly the tree being committed.
+- **Runs are deterministic across jobs and GPUs on one node,** with cuDNN's `benchmark` and `deterministic` flags both off: two jobs on GPUs 0 and 1 of cs001 made pixel-identical images at batch 1 and at batch 4. Not tested across nodes yet; every Phase 5 job ran on cs001.
+- **Batch size changes the pixels, a little** (largest difference 3 of 255, LPIPS ≤ 1.7e-5). Compare configs at the same batch size; the difference is far below the 0.01 tolerance.
+- **The baseline's ViT-g/14 CLIP Score, 30.81 on 50 COCO prompts, is close to DeepCache's published 30.30** for 50-step PLMS on COCO, PLAN.md's Phase 6 sanity check. 50 prompts is noisy: single images range from 24.7 to 44.2.
+- **KID says nothing at 50 images.** With subsets of min(1000, n), any n ≤ 1000 makes every subset the whole set, so every subset gives the same value: `kid_std` is 2e-7. The mean, −0.0033, is negative because the unbiased estimator dips below 0 when 50 images can't tell the two sets apart. At debug size KID checks the code path, not the quality. See the open issue.
+- **Batch 4 gives 1.19× the throughput for 1.8× the memory** (8.77 GB peak against 4.76). With classifier-free guidance, batch 1 already sends 2 latents through the UNet, so there's less to gain.
+- **Evaluation is quick.** P5.4 re-hashed ViT-g's 5.47 GB in 9 s, then scored 200 images in 73 s in all. The 50 photos' Inception features were computed once and reused: 15 s for the first run, 6 s for each one after.
+- **`check_run.py` on coe-hpc1 waits on storage when the files aren't cached.** Checking the 4 debug runs (200 PNGs, 84 MB) took 160 s, at about 5 % of a CPU and 40 MB, while P5.4 was reading the same files. Once they were cached, each `--compare` took 1.5 s. For large result sets, use the check inside `evaluate.slurm`.
+- **The prelude's `gpus=` field is `CUDA_VISIBLE_DEVICES`,** the GPU's index on the node, not a count: job 98056 printed 1, job 98329 printed 0.
+- **Some Phase 6 and 7 work is already done:** PLAN.md's Phase 6 commit 2 (`--summary-out`) is `summarize.py --csv`, and Phase 7's `--prompts-file` is in `run_experiments.py`.
+
+### Decisions
+
+- **CLIP Score by hand, for both models** (Dan, 2026-10-28): 100 × max(cos(image, prompt), 0) per image, for OpenCLIP ViT-g/14 (`clip_vitg`, primary) and CLIP ViT-L/14 (`clip_vitl`), from the pinned weights. A run's score is the mean. torchmetrics' CLIPScore and the transformers 5 adapter are no longer in the metric code; `check_assets.py` keeps the adapter for its own check.
+- **NFE has two columns** (Dan, 2026-10-28): `nfe` (every UNet call) and `nfe_full` (calls that ran the whole UNet). They differ only under DeepCache.
+- **TF32 off** for matmuls and cuDNN (`configs/base.yaml` `tf32`), set on every run, since the flags are process-global. `check_run` fails a run whose recorded flags differ from its config.
+- **KID** uses subsets of min(1000, n) images, drawn with a fixed seed. **FID** is computed only from 5,000 COCO images; below that, `fid_skipped` gives the reason. Real images are center-cropped to 512×512, as before.
+- **Determinism tolerance:** B reproduces A if every image is pixel-identical, or each differing one has LPIPS < 0.01 against A's.
+- **`summary.csv` per result set,** with a `run` column (the path under the result set), since run names repeat across result sets.
 
 ## Phase 4: Frozen prompts, D1 and D2 (2026-10-28)
 
@@ -321,6 +412,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - open_clip takes the local safetensors path.
   - Scripts: `prefetch_assets.py` and `fetch_datasets.sh` run on coe-hpc1; `check_assets.sbatch` is the HPC3 gate.
 - **Prompt set** (Phase 4): `data/prompts/eval_prompts.jsonl` and `subsets/`, built by `scripts/prepare_prompts.py` with `--sample-seed 0 --base-seed 1000`; see [data/prompts/README.md](../../data/prompts/README.md).
+- **Measurement** (Phase 5): TF32 off; NFE as `nfe` and `nfe_full`; stage times with CUDA events; CLIP Score by hand with ViT-g/14 (primary) and ViT-L/14; KID with subsets of min(1000, n); FID only from 5,000 COCO images. See Phase 5's decisions.
 - **Versions are unchanged** despite the CLIPScore incompatibility (Dan, 2026-10-19). An adapter is used instead of `transformers<5`.
 - **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
 
@@ -329,7 +421,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
 - **The whole class is in the group.** `cmpe261-fa26` has 19 members, so every classmate can write to and delete from `group4/`. There's no team-only group. Locking finished data with `chmod -R a-w` is the only guard. Dan could ask the admins for a team group.
 - **GPU 0 on cs002 is broken (found 2026-10-28, job 98023).** Submit GPU jobs with `--exclude=cs002` until the admins fix it; Dan reports it to them. Details are in Phase 3's findings.
 - **CPU threads aren't limited to the allocation. Handled since Phase 3.** In job 92197 (`-c 2`), torch picked 28 threads, all of c19's physical cores. This fits correction 2: cgroups don't confine the job. `job_prelude.sh` sets `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK`.
-- **torchmetrics' CLIPScore doesn't work with transformers 5 (found by job 92223; needs Dan's OK in Phase 5).**
+- **Resolved in Phase 5 (Dan, 2026-10-28): CLIP Score is computed by hand, so the metric code doesn't use CLIPScore.** The original issue: torchmetrics' CLIPScore doesn't work with transformers 5 (found by job 92223).
   - **The cause:** in transformers 5.20.1, `CLIPModel.get_image_features` and `get_text_features` return a `BaseModelOutputWithPooling`, with the projected embedding in `.pooler_output`. transformers 4.x returned the tensor itself. torchmetrics 1.9.0 calls `.norm()` on the result and fails with `AttributeError: 'BaseModelOutputWithPooling' object has no attribute 'norm'`.
   - **No fix exists upstream.** 1.9.0 (2026-03-09) is the latest torchmetrics release.
   - **Downgrading is costly.** The last transformers 4.x release (4.57.6) needs `huggingface_hub<1.0`, but diffusers 0.41 needs `>=1.32`. So `transformers<5` would also downgrade diffusers, mean rebuilding the venv, and redo the Phase 1 gate.
@@ -339,4 +431,8 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - A score computed by hand, `100 * max(cos, 0)`, also gives 20.45, so the metric's definition doesn't change.
   - **Proposed for Phase 5:** use the same adapter in `src/eldm/metrics.py`, or compute the per-image score by hand, which `quality_per_image.csv` needs anyway. Dan confirms which in Phase 5.
 - **coe-hpc1 has an old NVIDIA driver (CUDA 10.1).** torch prints a harmless warning there when it probes CUDA. We never use a GPU on coe-hpc1.
-- **NFE with DeepCache (Phase 5, needs Dan's decision).** DeepCache's cached steps still call `unet.forward` and skip only the inner blocks. A UNet forward hook would therefore count the same NFE as the baseline. Proposal: count full and partial passes separately, for example with a hook on `unet.mid_block`.
+- **KID below 1,001 COCO images (found 2026-10-29, job 98332).** With subsets of min(1000, n), `kid_std` is about 0 and `kid_mean` is noise at small n (Phase 5's findings). The pilot's 100 COCO prompts have the same problem, and PLAN.md's Phase 6 already says to skip KID at 200 prompts. The sweeps aren't affected: 2,000 COCO images give subsets of 1,000. Changing the metric is Dan's call. The options:
+  - (a) leave the code as it is, and read KID only from the sweeps;
+  - (b) have `evaluate_quality.py` skip KID below a minimum, as it does for FID, with a `kid_skipped` reason;
+  - (c) use smaller subsets at small n, such as n/2, so `kid_std` means something.
+- **Resolved in Phase 5 (Dan, 2026-10-28): NFE has two columns, `nfe` and `nfe_full`.** The original issue: DeepCache's cached steps still call `unet.forward` and skip only the inner blocks, so a UNet forward hook alone counts the same NFE as the baseline. The proposed hook on `unet.mid_block` would have been wrong: DeepCache wraps the mid block too, so its hook fires on cached steps. Full passes are counted at `unet.mid_block.resnets[0]` (Phase 5's findings).

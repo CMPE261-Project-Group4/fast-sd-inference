@@ -69,8 +69,6 @@ def gpu_info() -> dict:
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         "cudnn": torch.backends.cudnn.version(),
-        "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
-        "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
     }
 
 
@@ -88,8 +86,9 @@ def main(argv: list[str] | None = None) -> int:
     if "A100" not in info["gpu"] and not args.allow_any_gpu:
         print(f"FAIL: running on {info['gpu']!r}, not an A100 (check --gres=gpu:a100:1)")
         return 1
-    print(f"GPU check on {info['gpu']}, torch {info['torch']} (CUDA {info['cuda']}, cuDNN {info['cudnn']}),"
-          f" TF32 matmul={info['matmul_allow_tf32']} cudnn={info['cudnn_allow_tf32']}", flush=True)
+    # Each run's TF32 flags are set from configs/base.yaml and recorded in its perf.json env.
+    print(f"GPU check on {info['gpu']}, torch {info['torch']} (CUDA {info['cuda']}, cuDNN {info['cudnn']})",
+          flush=True)
 
     args.out.mkdir(parents=True, exist_ok=True)
     prompts_file = args.out / "prompts.jsonl"

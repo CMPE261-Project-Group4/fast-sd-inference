@@ -11,7 +11,7 @@
 We take a pretrained Stable Diffusion v1.5 pipeline (no training) and measure how
 **fewer denoising steps**, **alternative schedulers (DDIM, DPM-Solver++)**, **FP16 inference**
 and **feature caching (DeepCache)** affect latency, peak GPU memory, throughput and image quality
-(CLIP Score, FID, LPIPS-vs-baseline) — first one factor at a time, then combined.
+(CLIP Score, KID/FID, LPIPS-vs-baseline) — first one factor at a time, then combined.
 
 ---
 
@@ -41,7 +41,8 @@ fast-sd-inference/
 │   ├── prompts.py                # prompt-set I/O
 │   ├── pipeline.py               # builds the diffusers pipeline from a config
 │   ├── benchmark.py              # timed generation loop (latency / memory / throughput)
-│   └── metrics.py                # CLIP score, FID, LPIPS
+│   ├── probes.py                 # hooks: UNet calls (NFE) and per-stage times
+│   └── metrics.py                # CLIP Score (ViT-g/14, ViT-L/14), KID/FID, LPIPS
 ├── scripts/
 │   ├── prepare_prompts.py        # COCO captions + PartiPrompts -> eval_prompts.jsonl + subsets/
 │   ├── run_experiments.py        # run every run in an experiment file
@@ -59,9 +60,10 @@ Each run writes to `results/<run_name>/`:
 ```
 images/0000.png ...       # one image per prompt, same seed across all runs
 config.yaml               # fully-resolved config (for reproducibility)
-timings.jsonl             # per-batch latency + peak memory
-perf.json                 # aggregated perf metrics + environment info
-quality.json              # written by evaluate_quality.py
+timings.jsonl             # per batch: latency, peak memory, NFE, stage times
+perf.json                 # aggregated perf metrics + environment info (node, GPU, commit, TF32)
+quality.json              # written by evaluate_quality.py: the run's means, KID/FID
+quality_per_image.csv     # written by evaluate_quality.py: CLIP Scores and LPIPS per image
 ```
 
 ---
@@ -133,18 +135,24 @@ with `scripts/hpc/run_gpu.slurm`, reworked for the cluster in Phase 3; its first
 ### 3. Evaluate quality (Dan)
 
 ```bash
-python scripts/evaluate_quality.py --runs "results/*" --baseline results/baseline --fid-ref /path/to/coco/val2017
+python scripts/evaluate_quality.py --runs "results/*" --baseline results/baseline
 ```
 
-CLIP Score is always computed; LPIPS-to-baseline when `--baseline` is given; FID when `--fid-ref` is given.
+Always: CLIP Score per image with OpenCLIP ViT-g/14 (`clip_vitg`, primary) and CLIP ViT-L/14
+(`clip_vitl`), and KID of the run's COCO images against the val2017 photos their captions describe
+(`--coco-images`, the shared copy by default). FID only from 5,000 COCO images: below that,
+`fid_skipped` says why. LPIPS to the baseline's image for the same prompt and seed with
+`--baseline`. On HPC, `scripts/hpc/evaluate.slurm` runs this on a GPU, then checks and summarizes.
 
 ### 4. Summarize (Dan / Haoran)
 
 ```bash
-python scripts/summarize.py --runs "results/*" --out report/figures
+python scripts/summarize.py --runs "results/*" --baseline results/baseline --out report/figures
 ```
 
-Produces `results/summary.csv`, latency-vs-CLIP and memory plots, and side-by-side image grids.
+Produces `results/summary.csv` (`--csv` to put it elsewhere): one row per run with latency,
+speedup over `--baseline`, throughput, memory, NFE, stage times, the quality metrics, node and GPU.
+Plus latency-vs-CLIP and memory plots, and side-by-side image grids.
 
 ---
 

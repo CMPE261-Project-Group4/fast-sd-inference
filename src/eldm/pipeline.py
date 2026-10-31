@@ -41,11 +41,14 @@ def build_pipeline(cfg: dict[str, Any]):
     dtype = DTYPES[cfg["dtype"]]
     if dtype == torch.float16 and device == "cpu":
         raise ValueError("fp16 is not supported on CPU")
+    # Process-global flags: set them on every run, so no run inherits another's.
+    torch.backends.cuda.matmul.allow_tf32 = cfg["tf32"]["matmul"]
+    torch.backends.cudnn.allow_tf32 = cfg["tf32"]["cudnn"]
 
     pipe = StableDiffusionPipeline.from_pretrained(
         cfg["model_id"],
         revision=cfg.get("model_revision"),  # pinned commit: the offline cache holds only this one
-        torch_dtype=dtype,
+        dtype=dtype,                  # torch_dtype is deprecated in diffusers 0.41
         safety_checker=None,          # avoid black images skewing quality metrics
         requires_safety_checker=False,
     )
