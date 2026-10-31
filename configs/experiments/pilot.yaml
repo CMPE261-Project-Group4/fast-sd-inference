@@ -1,0 +1,21 @@
+# Pilot (Phase 6, gate G2): five of the sweep's runs on the 200-prompt pilot subset
+# (100 COCO + 100 PartiPrompts). Each run is the run of the same name in 00-04 except for
+# prompts_file (tests/test_config.py checks this), so the pilot's timings predict the sweep's.
+base: configs/base.yaml
+runs:
+  - name: baseline
+    prompts_file: data/prompts/subsets/pilot.jsonl
+  - name: ddim_20
+    scheduler: ddim
+    num_inference_steps: 20
+    prompts_file: data/prompts/subsets/pilot.jsonl
+  - name: dpmpp_20
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+    prompts_file: data/prompts/subsets/pilot.jsonl
+  - name: deepcache_i3
+    deepcache: {enabled: true, cache_interval: 3}
+    prompts_file: data/prompts/subsets/pilot.jsonl
+  - name: fp16
+    dtype: fp16
+    prompts_file: data/prompts/subsets/pilot.jsonl
