@@ -36,7 +36,8 @@ echo "evaluating ${#RUNS[@]} run(s) under ${RESULTS}, baseline ${BASELINE}:"
 printf '  %s\n' "${RUNS[@]}"
 
 cd "${CLONE}"
-python scripts/evaluate_quality.py --runs "${RUNS[@]}" --baseline "${BASELINE}" "$@"
+# --device cuda: fail on a GPU that CUDA can't use rather than score on the CPU (see run_gpu.slurm).
+python scripts/evaluate_quality.py --device cuda --runs "${RUNS[@]}" --baseline "${BASELINE}" "$@"
 echo
 # Summarize even if a check fails, so the table shows what's wrong; the job still fails.
 status=0
