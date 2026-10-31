@@ -13,7 +13,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 0 Orient | `hpc/p0-orient` | ssh without a prompt, `a100` GRES, `group4/` writable | **pass** (2026-10-18) |
 | 1 Portable environment | `hpc/p1-env` | imports pass on both clusters, clean env | **pass** (2026-10-19, job 92197) |
 | 2 Offline assets | `hpc/p2-assets` | everything loads on HPC3 offline | **pass** (2026-10-19, job 92251; job 92223 failed first) |
-| 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | not started |
+| 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | **pass** (2026-10-28, job 98056; job 97329 failed first on a broken GPU) |
 | 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | not started |
 | 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | not started |
 | 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | not started |
@@ -29,6 +29,56 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-10-19 | 92223 | P2.1 offline asset check (`check_assets.sbatch --full`, defq, 2 CPUs, 24G) | c19 | FAILED 1:0 in 1m54s, MaxRSS 2.6 GB; 16 of 17 checks passed. CLIP ViT-L/14 failed: torchmetrics CLIPScore doesn't work with transformers 5 (see open issues) |
 | 2026-10-19 | 92251 | P2.2 offline asset check, rerun with the CLIPScore adapter | c19 | COMPLETED 0:0 in 1m25s, MaxRSS 2.35 GB (sampled); all 17 checks passed |
 | 2026-10-19 | 92300 | P2.3 confirm check jobs use the submitting clone (a4ffae1), `check_env.sbatch` | c19 | COMPLETED 0:0 in 20 s; the log landed in the submitting clone's `logs/`, shows commit 447ac76, and has 40/40 checks ok |
+| 2026-10-27 | 97329 | P3.1 GPU smoke check (`check_gpu.sbatch`, gpuqs, 1× A100, 8 CPUs, 32G) | cs002, GPU 0 | FAILED 1:0 in 20 s. Every variant failed at `pipe.to("cuda")` with "CUDA-capable device(s) is/are busy or unavailable" on an idle GPU |
+| 2026-10-28 | 98023 | P3.2 GPU access diagnostic (`gpu_diagnose.sbatch`, 1× A100, 2 CPUs, 8G) | cs002, GPU 0 | COMPLETED 0:0 in 19 s. GPU 0 can't allocate in any environment, Slurm's raw one included; GPUs 1–3 can. Cause of 97329: a broken GPU, not our code |
+| 2026-10-28 | 98056 | P3.3 GPU smoke check, rerun with `--exclude=cs002` | cs001, GPU 1 | COMPLETED 0:0 in 1m04s, MaxRSS 3.4 GB; all 4 runs pass `check_run.py`; **gate G1 passed** |
+
+## Phase 3: First GPU job, R3 and G1 (2026-10-27 to 2026-10-28)
+
+### Gate G1: pass
+
+Job 98056 on cs001 (GPU 1) ran `scripts/hpc/check_gpu.sbatch` from commit 883514d, with the GPU check files not yet committed (`+uncommitted` in the log). It ran in the prelude's clean environment, offline. SD1.5 loaded at `451f4fe`, and 4 variants each made 2 images from 2 smoke prompts in `data/prompts/manual_prompts.yaml` (seeds 1000 and 1001), through `eldm.benchmark.run`. Then `scripts/check_run.py --require-gpu A100` passed all 4 run directories: 2 images each, none missing, extra or blank; `perf.json` complete; GPU recorded as an A100.
+
+| Variant | s/image | Speedup | Peak GB |
+|---|---|---|---|
+| baseline: PNDM 50 steps, FP32 | 4.13 | 1.00× | 4.95 |
+| `fp16` | 1.46 | 2.84× | 2.61 |
+| `dpmpp_20`: DPM-Solver++ 2M, 20 steps | 1.67 | 2.48× | 4.95 |
+| `deepcache_i3`: DeepCache, interval 3 | 1.74 | 2.38× | 5.16 |
+
+**These are smoke numbers, not results.** Each is 2 images after the base config's 2 warm-up batches, on a node where another user's job (97996) kept GPU 0 at 100 %. TF32 was at torch 2.6's defaults: off for matmuls, **on for cuDNN convolutions**, so the "FP32" baseline's convolutions ran in TF32. Phase 5 pins the flags; real timings come from Phase 6 onward. Image-to-image spread was small: the latency std over the 2 images was at most 6 ms.
+
+Outputs: `/scratch/cmpe261-fa26/group4/results/_checks/98056/`: one run directory per variant, plus `prompts.jsonl` and `summary.json`.
+
+**The images, looked at as a sanity check** (the checker decides the gate): all 8 are coherent and match their prompts. FP16 is almost identical to the baseline (mean absolute pixel difference 4.2 and 0.7 out of 255). DPM-Solver++ keeps the baseline's composition (15). DeepCache is on-prompt but changes the composition more (21 and 31): its lemon image puts a large bowl of lemons and dark fruit where the baseline has a small bowl and loose lemons. Phase 5's LPIPS against the baseline will measure this properly.
+
+### Commits
+
+- `6ab1ebb fix(hpc): rework run_gpu.slurm for HPC3`. It adds `scripts/hpc/job_prelude.sh` (the clean re-exec, `site.sh`, thread counts, `$STAGE`, the job log) and its test. PLAN.md's commit 1 also listed `logs/.gitkeep` and the `.gitignore` change, which `a4ffae1` already made in Phase 2.
+- `8a7a383 test: add run-directory checker`: `scripts/check_run.py`.
+- `518cd87 fix(hpc): count untracked files as uncommitted in the job log`, an extra commit.
+- `883514d chore(hpc): add GPU access diagnostic job`, an extra commit, after job 97329: `scripts/hpc/gpu_diagnose.sbatch`, plus a troubleshooting entry.
+- `df41188 fix(hpc): keep SLURMD_NODENAME in the job's clean environment`, an extra commit, after job 98056.
+- `test(hpc): add GPU smoke check for four variants` (this commit): `scripts/hpc/gpu_check.py`, `scripts/hpc/check_gpu.sbatch`, their test, and these docs.
+
+### Findings
+
+- **GPU 0 on cs002 is broken.** Job 97329 failed there, and diagnostic job 98023 showed why:
+  - GPU 0 (PCI `00000000:17:00.0`, UUID `GPU-caaea0d3-c49b-d599-41f0-f8448e269d0b`) fails every CUDA allocation with "CUDA-capable device(s) is/are busy or unavailable": under Slurm's raw environment, under the prelude's clean one, and with or without `CUDA_DEVICE_ORDER`. It's idle, at 0 MiB, in Default compute mode. GPUs 1–3 on the same node allocate fine.
+  - Slurm hands out the lowest free index, and only Dan's jobs have run on cs002 since 2026-10-20. So every 1-GPU job there gets GPU 0. Dan's `llm-ping` job 93353 also failed on cs002, on 2026-10-21; its cause wasn't checked.
+  - Until the admins fix it, submit GPU jobs with `--exclude=cs002`. Dan has a drafted report for the admins.
+- **GPUs really aren't isolated** (correction 2, confirmed). `cgroup.conf` has `ConstrainDevices=yes`, but job 98023 opened all four `/dev/nvidia*` files and allocated on GPUs it hadn't been given (all idle at the time, with no other jobs on the node). `CUDA_VISIBLE_DEVICES` is the only thing that keeps a job on its own GPU, which is why the prelude keeps it. The committed diagnostic only allocates on its own GPU.
+- **The prelude dropped `SLURMD_NODENAME`**, which doesn't match `SLURM_*`. So job 98056 didn't log its co-tenants; `squeue` afterwards showed job 97996 on cs001. Fixed in `df41188`. The GPU utilization line in the log did show GPU 0 at 100 %.
+- **diffusers 0.41 tries the Hub first.** With a pinned revision and `HF_HUB_OFFLINE=1`, it prints "Couldn't connect to the Hub … offline mode is enabled" and then "Will try to load from local cache", and it loads. It's harmless; DEVELOPMENT.md now lists it.
+- **DeepCache 0.1.1 works with diffusers 0.41** on the GPU, as Phase 3's plan expected. No version change was needed.
+- **Not recorded yet:** the attention processor. Phase 2 found `AttnProcessor2_0` (SDPA) on CPU; Phase 5 adds it to `perf.json`.
+- **`run_gpu.slurm` hasn't run.** It needs Phase 4's prompt files. Its first job is in Phase 5.
+
+### Decisions
+
+- **Phase 3 branched from `main`,** since PRs #1–#4 are merged, so its PR shows only Phase 3.
+- **One shared job prelude,** `scripts/hpc/job_prelude.sh`, for every GPU job: `run_gpu.slurm` now, the job arrays in Phase 7. [DEVELOPMENT.md](DEVELOPMENT.md#writing-a-job-script) explains each step.
+- **The gate check is decided by `check_run.py`,** not by looking at the images.
 
 ## Phase 2: Offline assets, R2 and part of D2 (2026-10-19)
 
@@ -186,6 +236,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
    - In job 90582, `nvidia-smi` showed all 4 A100s while `CUDA_VISIBLE_DEVICES=0`, so the device cgroup isn't enforced.
    - gpuqs has `OverSubscribe=FORCE:4`, and other users' jobs share the cs nodes.
    - So: log `CUDA_VISIBLE_DEVICES`, use `nvidia-smi -i "$CUDA_VISIBLE_DEVICES"`, and record co-tenant jobs at job start. Keep the second-node baseline rerun.
+   - Confirmed by job 98023 (2026-10-28): `cgroup.conf` has `ConstrainDevices=yes`, yet a job can open and allocate on GPUs it wasn't given. See Phase 3's findings.
 3. **A plain `gpu:1` can land on a P100 or an H100** (g16, g18 and g19 are in gpuqs). Always use `--gres=gpu:a100:1`.
 4. **Path spelling.** On coe-hpc1, `/data` is a symlink to `/fs/atipa/data`. On HPC3, `/data` is the NFS mount, and `/fs/atipa/data` is a symlink to `/data`. Both spellings work on both clusters. Scripts and the venv use the `/data/...` spelling.
 5. **Missing directories.** `group4/cache/` and `datasets/{coco,partiprompts}` don't exist yet. `setup_env.sh` and `fetch_datasets.sh` create them.
@@ -241,7 +292,8 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
 ## Open issues
 
 - **The whole class is in the group.** `cmpe261-fa26` has 19 members, so every classmate can write to and delete from `group4/`. There's no team-only group. Locking finished data with `chmod -R a-w` is the only guard. Dan could ask the admins for a team group.
-- **CPU threads aren't limited to the allocation (Phase 3 onward).** In job 92197 (`-c 2`), torch picked 28 threads, all of c19's physical cores. This fits correction 2: cgroups don't confine the job. Job scripts should set `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK`, so we don't oversubscribe a shared node and add noise to the timings.
+- **GPU 0 on cs002 is broken (found 2026-10-28, job 98023).** Submit GPU jobs with `--exclude=cs002` until the admins fix it; Dan reports it to them. Details are in Phase 3's findings.
+- **CPU threads aren't limited to the allocation. Handled since Phase 3.** In job 92197 (`-c 2`), torch picked 28 threads, all of c19's physical cores. This fits correction 2: cgroups don't confine the job. `job_prelude.sh` sets `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK`.
 - **torchmetrics' CLIPScore doesn't work with transformers 5 (found by job 92223; needs Dan's OK in Phase 5).**
   - **The cause:** in transformers 5.20.1, `CLIPModel.get_image_features` and `get_text_features` return a `BaseModelOutputWithPooling`, with the projected embedding in `.pooler_output`. transformers 4.x returned the tensor itself. torchmetrics 1.9.0 calls `.norm()` on the result and fails with `AttributeError: 'BaseModelOutputWithPooling' object has no attribute 'norm'`.
   - **No fix exists upstream.** 1.9.0 (2026-03-09) is the latest torchmetrics release.

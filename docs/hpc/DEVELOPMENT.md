@@ -45,7 +45,7 @@ The loop, the same for every change:
 2. Write or update the job script, then read it back: paths, resources, `--time`.
 3. Run a **tiny job** first: 2–4 prompts, `--time=00:20:00`.
 4. Follow it with `squeue` and `sacct` at sensible intervals, not every few seconds, and read its log.
-5. Check the outputs with a checker script, not by eye. `scripts/check_run.py` arrives in Phase 3.
+5. Check the outputs with a checker script, not by eye: `python scripts/check_run.py <run_dir>... [--require-gpu A100] [--expect-quality]`.
 6. If it failed, read the log, fix the script, and run a new tiny job.
 7. Run the full-size job only after the tiny one passes. Then commit.
 
@@ -69,8 +69,12 @@ The jobs we have:
 |---|---|---|---|
 | `scripts/hpc/check_env.sbatch` | the shared venv imports in a clean environment | defq, 2 CPUs, 4G, 10 min | ~40 s |
 | `scripts/hpc/check_assets.sbatch` | every model, metric weight and dataset loads with the network blocked | defq, 2 CPUs, 24G, 30 min | ~1.5 min |
+| `scripts/hpc/check_gpu.sbatch` | gate G1: baseline, FP16, DPM-Solver++ 20 and DeepCache N=3 make 2 images each on an A100; `check_run.py` checks them. Outputs in `results/_checks/<jobid>/` | gpuqs, 1× A100, 8 CPUs, 32G, 20 min | ~1 min |
+| `scripts/hpc/gpu_diagnose.sbatch` | why a job can't use its GPU (§7) | gpuqs, 1× A100, 2 CPUs, 8G, 10 min | ~20 s |
 
-GPU job scripts arrive in Phase 3.
+Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A100, 20 minutes by default. For a full run, pass `sbatch --time=…`.
+
+**Add `--exclude=cs002` to every GPU job** until the admins fix its GPU 0 (§7).
 
 Limits to know (measured; re-check with `sinfo` and `scontrol show partition <name>`):
 
@@ -83,7 +87,7 @@ Record every job that backs a gate or a result in the jobs table in [PROGRESS.md
 
 ### Writing a job script
 
-Start from this template. Each rule fixes something we measured on this cluster:
+Start from this template. `scripts/hpc/run_gpu.slurm` is a complete example.
 
 ```bash
 #!/bin/bash
@@ -98,22 +102,23 @@ Start from this template. Each rule fixes something we measured on this cluster:
 
 set -euo pipefail
 CLONE="$(cd "${SLURM_SUBMIT_DIR:-$(dirname "${BASH_SOURCE[0]}")/../..}" && pwd)"
-source "${CLONE}/env/site.sh"      # never `module load`: modules differ between the clusters
-export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}" MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+source "${CLONE}/scripts/hpc/job_prelude.sh"   # clean env, site.sh, threads, $STAGE, log
 
-# Node-local SSD: /tmp is shared by every job on the node and isn't cleaned per job.
-STAGE="${TMPDIR:-/tmp}/eldm-${SLURM_JOB_ID}"
-mkdir -p "${STAGE}" && trap 'rm -rf "${STAGE}"' EXIT
-
-nvidia-smi -i "${CUDA_VISIBLE_DEVICES}" --query-gpu=name,driver_version --format=csv
-python "${CLONE}/scripts/<script>.py" ...
+python "${CLONE}/scripts/<script>.py" --stage "${STAGE}" ...
 ```
 
-Why each rule:
-- **`$SLURM_SUBMIT_DIR`:** Slurm runs a copy of the script from its spool directory, so the script's own path isn't your clone.
-- **Thread counts:** Slurm here doesn't confine CPUs. Without them, torch uses every core of a shared node: 28 threads under `-c 2` in job 92197.
-- **`nvidia-smi -i`:** GPUs aren't isolated either. A job sees all 4 A100s and uses the one in `CUDA_VISIBLE_DEVICES`.
-- **`site.sh`:** it resets `PYTHONPATH`, so a module loaded in your g17 shell can't leak packages into the job. Still, don't `module load` before `sbatch`.
+`scripts/hpc/job_prelude.sh` handles everything this cluster gets wrong, so a job script doesn't have to:
+
+| What the prelude does | Why |
+|---|---|
+| Re-runs the job script under `env -i`, keeping only `SLURM_*`, `SLURMD_NODENAME`, `CUDA_VISIBLE_DEVICES` and `TMPDIR` | `sbatch` copies your g17 shell into the job, so a loaded module's `PYTHONPATH` or `LD_LIBRARY_PATH` would leak in. `CUDA_VISIBLE_DEVICES` is kept because nothing else stops the job from using another job's GPU: all 4 A100s are visible. |
+| Sources `env/site.sh` | paths, caches, offline flags and the venv; never `module load`, since modules differ between the clusters |
+| Sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` | CUDA then numbers GPUs the way `nvidia-smi` and Slurm do |
+| Sets `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK` | Slurm doesn't confine CPUs: torch used 28 threads under `-c 2` in job 92197 |
+| Creates `$STAGE` = `$TMPDIR/eldm-<jobid>` and removes it on exit | the node-local SSD at `/tmp` is shared by every job on the node and isn't cleaned per job. So don't set your own `trap … EXIT`. |
+| Logs the node, commit (`+uncommitted` if your tree is dirty), the GPU, the load on the node's other GPUs, and the jobs sharing the node | timings on shared nodes need this context |
+
+The clone comes from `$SLURM_SUBMIT_DIR` because Slurm runs a copy of the script from its spool directory, so the script's own path isn't your clone.
 
 ## 4. Changing the shared environment, models or datasets
 
@@ -191,7 +196,11 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `scripts/hpc/fetch_datasets.sh` | downloads, verifies and locks the datasets |
 | `scripts/hpc/check_env.sbatch` | import check in a clean environment (CPU job, or `bash` on coe-hpc1) |
 | `scripts/hpc/check_assets.py`, `check_assets.sbatch` | offline load check: `--quick` on coe-hpc1, `--full` as a CPU job |
-| `scripts/hpc/run_gpu.slurm` | the GPU job: **still the old scaffold; Phase 3 reworks it** |
+| `scripts/hpc/job_prelude.sh` | the common start of every job: clean env, `site.sh`, threads, `$STAGE`, logging |
+| `scripts/hpc/gpu_diagnose.sbatch` | when a job can't use its GPU: tells a broken GPU apart from our environment handling (§7) |
+| `scripts/hpc/gpu_check.py`, `check_gpu.sbatch` | gate G1's smoke check: 4 variants × 2 images through `eldm.benchmark.run` |
+| `scripts/check_run.py` | checks run directories: images present, decodable and not blank; `perf.json` complete |
+| `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5, once Phase 4's prompt files exist. |
 
 ## 7. Troubleshooting
 
@@ -202,9 +211,10 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | The job finished but there's no log | submitted from outside the repo root | `cd` to your clone's root before `sbatch` |
 | `error: … is not a fast-sd-inference clone` | the same | the same |
 | The job landed on a P100 or an H100 | a plain `--gres=gpu:1` | `--gres=gpu:a100:1` |
+| `CUDA error: CUDA-capable device(s) is/are busy or unavailable` on an idle GPU | a broken GPU: GPU 0 on cs002 since at least 2026-10-27 (job 98023). Slurm hands out the lowest free index, so 1-GPU jobs on an otherwise idle cs002 always get it | resubmit with `sbatch --exclude=cs002 …`. On another node, run `scripts/hpc/gpu_diagnose.sbatch` with `--nodelist=<node>` to confirm, then exclude that node and tell the HPC admins the node, GPU index and UUID |
 | `Requested node configuration is not available` | more than 2 CPUs on `defq` | use `-c 2`, or `cpuqs` |
 | `check_env` fails "venv matches requirements.lock" | someone ran pip in the shared venv | when no jobs run, rerun `scripts/hpc/setup_env.sh`, which rebuilds the venv |
 | `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 | use the `CLIPTensorFeatures` adapter in `scripts/hpc/check_assets.py`; Phase 5 settles this |
 | Timings vary between runs | shared nodes: other jobs use the CPUs; GPUs aren't isolated | set thread counts; repeat runs; compare runs on the same node |
 | `/home` quota or "No space left" errors | caches went to `~/.cache` | `source env/site.sh` before running anything |
-| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; `torch_dtype is deprecated` | nothing to do |
+| Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; `torch_dtype is deprecated`; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache" | nothing to do |

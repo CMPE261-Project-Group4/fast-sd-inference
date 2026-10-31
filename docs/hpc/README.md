@@ -49,43 +49,42 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 | 0 Orient | measure the real cluster | ssh to HPC3, A100 GRES, writable storage | **pass** |
 | 1 Portable environment | one venv for both clusters, no modules | imports pass in a clean environment on both | **pass** (job 92197) |
 | 2 Offline assets | models, metric weights and datasets on shared storage | everything loads on HPC3 with the network blocked | **pass** (job 92251) |
-| 3 First GPU job (G1) | the pipeline makes images on an A100 | baseline, FP16, DPM-Solver++ and DeepCache make non-blank images; FP16 and DeepCache are faster | **next** |
-| 4 Frozen prompts | the final prompt set, committed once | 2,000 COCO + 1,632 PartiPrompts; Challenge counts match | not started |
+| 3 First GPU job (G1) | the pipeline makes images on an A100 | baseline, FP16, DPM-Solver++ and DeepCache make non-blank images; FP16 and DeepCache are faster | **pass** (job 98056) |
+| 4 Frozen prompts | the final prompt set, committed once | 2,000 COCO + 1,632 PartiPrompts; Challenge counts match | **next** |
 | 5 Measurement | trustworthy numbers: TF32 off, NFE, stage timings, CLIP/KID/FID/LPIPS | every summary column filled; runs deterministic | not started |
 | 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | not started |
 | 7 Orchestration | one command runs an experiment file and resumes after failures | a cancelled task reruns alone | not started |
 | 8 Full sweeps (G3) | each optimization alone, on the full prompt set | team confirms the combined settings | not started |
 | 9 Combined + FID | combined runs, leave-one-out ablation, FID | final summaries for the report | not started |
 
-## Where we are (2026-10-19)
+## Where we are (2026-10-28)
 
-- **Branches:** `hpc/p0-orient`, `hpc/p1-env` and `hpc/p2-assets` are pushed, one PR each. `main` is still the scaffold until those merge, so work from `hpc/p2-assets` for now.
+- **Branches:** Phases 0–2 are merged into `main` (PRs #1–#4). Phase 3 is on `hpc/p3-gpu`, branched from `main`, waiting to be pushed and reviewed.
 - **Works now:**
   - the shared environment;
   - all models, metric weights and datasets, pinned and verified;
-  - the check jobs `scripts/hpc/check_env.sbatch` and `scripts/hpc/check_assets.sbatch`, which run from any teammate's clone;
-  - 23 unit tests.
+  - the check jobs `check_env.sbatch` and `check_assets.sbatch`, which run from any teammate's clone;
+  - **GPU jobs on an A100:** every GPU job starts with `scripts/hpc/job_prelude.sh` (clean environment, thread counts, a per-job stage directory, a job log). `check_gpu.sbatch` ran baseline, FP16, DPM-Solver++ 20 and DeepCache N=3 offline in 64 s (job 98056);
+  - `scripts/check_run.py`, which checks a run directory's images and `perf.json`;
+  - 46 unit tests.
+- **Watch out:** **GPU 0 on cs002 is broken**: every 1-GPU job that lands there fails with "busy or unavailable". Submit GPU jobs with `sbatch --exclude=cs002 …` until the admins fix it.
 - **Not done yet:**
-  - **No GPU job has run.** `scripts/hpc/run_gpu.slurm` is still the original scaffold, with the wrong partition and a plain `gpu:1`. Don't submit it until Phase 3 reworks it.
+  - **`run_gpu.slurm` is reworked but hasn't run.** It needs Phase 4's prompt files; its first job is in Phase 5.
   - **The metric code needs work in Phase 5.** `src/eldm/metrics.py` still asks for CLIP by model name, which fails offline and with transformers 5.
   - **No final prompt set yet.** It comes in Phase 4.
+  - **No real timings yet.** Phase 3's numbers are smoke numbers: 2 images, a co-tenant on the node, TF32 at torch's defaults.
 
 ## Next steps
 
-**Phase 3, the first GPU job** (`hpc/p3-gpu`):
-1. Rework `scripts/hpc/run_gpu.slurm` into the template in [DEVELOPMENT.md](DEVELOPMENT.md#writing-a-job-script):
-   - `-p gpuqs --gres=gpu:a100:1 --cpus-per-task=8 --mem=32G`;
-   - find the clone from `$SLURM_SUBMIT_DIR` and source `env/site.sh`;
-   - set thread counts from the allocation;
-   - send results to scratch.
-2. Add `scripts/check_run.py` and its tests. It checks that the image count matches the prompts, that the PNGs are readable and not blank, and that `perf.json` has the required fields.
-3. Add `scripts/hpc/gpu_check.py` and `check_gpu.sbatch`. They make 2 images each for baseline PNDM-50 FP32, FP16, DPM-Solver++ 20 and DeepCache N=3.
-   - Images go to a per-job folder under `$TMPDIR`, removed on exit, then are copied to `results/_checks/<jobid>/`.
-   - The GPU is logged with `nvidia-smi -i "$CUDA_VISIBLE_DEVICES"`.
+**Phase 4, the frozen prompts** (`hpc/p4-prompts`). It runs on coe-hpc1 only, with no GPU job:
+1. Parse PartiPrompts (Prompt, Category, Challenge, Note) and add an optional `challenge` field to `Prompt`. Old JSONL files must still load. Log how many prompts exceed 77 CLIP tokens, but keep them.
+2. Add Challenge-stratified sampling and the subset files. Subsets keep the full set's ids and seeds.
+3. Freeze `data/prompts/eval_prompts.jsonl` (2,000 COCO + 1,632 PartiPrompts) and the subsets `debug` (first 50), `pilot` (100 COCO + 100 PartiPrompts, stratified) and `parti_550`. The gate: the counts match the data doc, including 90 Quantity and 91 Writing & Symbols.
+
+`manual_prompts.yaml` leaves the evaluation set and stays as the smoke-test set that `check_gpu.sbatch` uses.
 
 **After that:**
-- **Phase 4:** parse PartiPrompts, sample stratified by Challenge, and freeze the prompts and subsets.
-- **Phase 5:** measurement correctness.
+- **Phase 5:** measurement correctness: TF32 off, NFE, stage timings, the metrics; `run_gpu.slurm`'s first job.
 - **Phase 6:** a 200-prompt pilot.
 - **Phase 7:** job arrays that resume after failures.
 - **Phases 8–9:** the sweeps and the final runs.
