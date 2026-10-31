@@ -11,6 +11,10 @@
 #                    report the node, GPU index and UUID to the HPC admins.
 #   A ok, C fails -> the prelude's env -i drops something CUDA needs.
 #   C ok, D fails -> CUDA_DEVICE_ORDER=PCI_BUS_ID.
+# If A finds no device ("device_count": 0) while nvidia-smi lists the GPU, read its MIG mode
+# under "Devices": a GPU in MIG mode with no instances gives CUDA no device, yet Slurm still
+# hands it out whole. (Job 99031: CUDA found no usable device on cs001's GPU 1, and GPUs 1-3
+# read utilization [N/A].)
 # CUDA only ever runs on the GPU allocated to this job. (Job 98023 found GPU 0 on cs002
 # broken: A–D all failed, while GPUs 1–3 allocated fine.)
 #
@@ -78,6 +82,8 @@ probe 'echo "variables the prelude drops: $(compgen -e | grep -vE "^(SLURMD?_.*|
 
 section "Devices and cgroup"
 probe 'nvidia-smi --query-gpu=index,pci.bus_id,uuid,compute_mode,memory.used,utilization.gpu --format=csv'
+# A query of its own, so a driver without these fields doesn't cost the table above.
+probe 'nvidia-smi --query-gpu=index,mig.mode.current,mig.mode.pending --format=csv'
 probe 'nvidia-smi -q -i "${CUDA_VISIBLE_DEVICES}" -d ECC,PAGE_RETIREMENT,ROW_REMAPPER'
 probe 'ls -l /dev/nvidia*'
 probe 'cat /proc/self/cgroup'
