@@ -14,7 +14,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 1 Portable environment | `hpc/p1-env` | imports pass on both clusters, clean env | **pass** (2026-10-19, job 92197) |
 | 2 Offline assets | `hpc/p2-assets` | everything loads on HPC3 offline | **pass** (2026-10-19, job 92251; job 92223 failed first) |
 | 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | **pass** (2026-10-28, job 98056; job 97329 failed first on a broken GPU) |
-| 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | not started |
+| 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | **pass** (2026-10-28; no job: built and checked on coe-hpc1) |
 | 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | not started |
 | 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | not started |
 | 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | not started |
@@ -33,9 +33,43 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-10-28 | 98023 | P3.2 GPU access diagnostic (`gpu_diagnose.sbatch`, 1× A100, 2 CPUs, 8G) | cs002, GPU 0 | COMPLETED 0:0 in 19 s. GPU 0 can't allocate in any environment, Slurm's raw one included; GPUs 1–3 can. Cause of 97329: a broken GPU, not our code |
 | 2026-10-28 | 98056 | P3.3 GPU smoke check, rerun with `--exclude=cs002` | cs001, GPU 1 | COMPLETED 0:0 in 1m04s, MaxRSS 3.4 GB; all 4 runs pass `check_run.py`; **gate G1 passed** |
 
+## Phase 4: Frozen prompts, D1 and D2 (2026-10-28)
+
+### Gate: pass
+
+No job ran. Dan chose to build and check the set on coe-hpc1 (2026-10-28): it takes 3 s and 82 MB in one process, inside the login-node rule. `python scripts/prepare_prompts.py` built the files from the shared datasets, and a second run gave identical sha256s. `tests/test_prompts.py` checks the files on every `pytest` run, including a byte-for-byte regeneration wherever the datasets exist.
+
+| Check | Result |
+|---|---|
+| Full set, `data/prompts/eval_prompts.jsonl` | 3,632 prompts: 2,000 COCO captions (ids 0–1999, 2,000 different images) and all 1,632 PartiPrompts (ids 2000–3631). `seed = 1000 + id` |
+| The data doc's counts, as PLAN.md quotes them | 2,000 COCO, 1,632 PartiPrompts, 90 Quantity, 91 Writing & Symbols: **all match**. I haven't seen the data doc itself |
+| Subsets, `data/prompts/subsets/` | `debug` 50 (COCO ids 0–49); `pilot` 200 (100 COCO + 100 PartiPrompts); `parti_550` 2,550 (2,000 COCO + 550 PartiPrompts). Rows identical to the full set's; `debug` ⊂ `pilot` ⊂ `parti_550`; Challenge counts as planned |
+| Reproducible | byte for byte; the sha256s are in [data/prompts/README.md](../../data/prompts/README.md) |
+
+### Commits
+
+- `60eaef4 feat(data): parse PartiPrompts and add the challenge field`
+- `33cbe65 feat(data): add Challenge-stratified sampling and subset files`
+- `data: freeze evaluation prompts and subsets` (this commit): the files, `data/prompts/README.md`, the frozen-file tests, and the docs.
+
+### Findings
+
+- **Python's default TSV parsing corrupts a prompt.** With csv's default quoting, `"G I G G L E" painted in thick colorful lettering…` (id 3560, Writing & Symbols) loses its quotes, which matter for text rendering. The parser reads the file literally (`QUOTE_NONE`); every line has exactly 4 fields.
+- **Whitespace.** 10 PartiPrompts have leading or trailing spaces, and COCO captions often end in a space; one caption (image 359219, not among the 2,000) contains a newline. Collapsing whitespace changed 3,814 of 26,646 texts and none of their CLIP token ids.
+- **One prompt exceeds CLIP's 77 tokens:** id 2358, 84 tokens. It's kept; diffusers truncates it (`truncation=True`) the same way in every config. The longest COCO caption has 58.
+- **The old COCO sampling couldn't grow.** `rng.sample(ids, n)` plus an interleaved `rng.choice` reorders the images when `n` changes, so Phase 9's 3,000 extra FID prompts would have changed the first 2,000. Now every image has one seeded order and one caption chosen in advance, so growing the set only appends.
+
+### Decisions
+
+- **`parti_550` holds all 2,000 COCO prompts plus the 550 PartiPrompts** (Dan, 2026-10-28). It's the whole fallback sweep set in one file: each run reads one prompts file, and KID needs the COCO prompts.
+- **Built on the login node, with no job** (Dan, 2026-10-28), from measured cost: 3.3 s, 95 MB.
+- **The subsets nest** (`debug` ⊂ `pilot` ⊂ `parti_550`), so results on a smaller subset are a slice of those on a larger one.
+- **The manual prompts left the evaluation set.** They stay in `manual_prompts.yaml` as the smoke-test set for `gpu_check.py`.
+- **PartiPrompts' Note isn't stored**; no metric uses it. Category and Challenge are.
+
 ## Phase 3: First GPU job, R3 and G1 (2026-10-27 to 2026-10-28)
 
-### Gate G1: pass
+### Gate G1: pass (approved by Dan, 2026-10-28)
 
 Job 98056 on cs001 (GPU 1) ran `scripts/hpc/check_gpu.sbatch` from commit 883514d, with the GPU check files not yet committed (`+uncommitted` in the log). It ran in the prelude's clean environment, offline. SD1.5 loaded at `451f4fe`, and 4 variants each made 2 images from 2 smoke prompts in `data/prompts/manual_prompts.yaml` (seeds 1000 and 1001), through `eldm.benchmark.run`. Then `scripts/check_run.py --require-gpu A100` passed all 4 run directories: 2 images each, none missing, extra or blank; `perf.json` complete; GPU recorded as an A100.
 
@@ -286,6 +320,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - CLIP-L uses a callable loader with the transformers 5 adapter;
     - open_clip takes the local safetensors path.
   - Scripts: `prefetch_assets.py` and `fetch_datasets.sh` run on coe-hpc1; `check_assets.sbatch` is the HPC3 gate.
+- **Prompt set** (Phase 4): `data/prompts/eval_prompts.jsonl` and `subsets/`, built by `scripts/prepare_prompts.py` with `--sample-seed 0 --base-seed 1000`; see [data/prompts/README.md](../../data/prompts/README.md).
 - **Versions are unchanged** despite the CLIPScore incompatibility (Dan, 2026-10-19). An adapter is used instead of `transformers<5`.
 - **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
 

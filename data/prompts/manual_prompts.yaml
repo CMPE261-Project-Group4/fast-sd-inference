@@ -1,5 +1,6 @@
-# Hand-designed prompts, grouped by category. Extend freely, then re-run
-# scripts/prepare_prompts.py and commit the regenerated eval_prompts.jsonl.
+# Hand-designed smoke-test prompts, grouped by category. They're NOT in the evaluation set
+# (eval_prompts.jsonl: COCO + PartiPrompts). scripts/hpc/gpu_check.py uses the first two,
+# so keep those unchanged to keep its numbers comparable; extend the rest freely.
 
 objects:
   - a red vintage bicycle leaning against a brick wall
