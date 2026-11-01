@@ -1,6 +1,8 @@
+import gc
 import importlib.util
 import json
 import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -115,3 +117,24 @@ def test_run_records_nfe_and_environment(tiny_cfg, monkeypatch):
     # PIL take about 9% of the time (job P5.1 checks it on the A100).
     problems = check_run.check_perf(run_dir, tiny_cfg, 2, None) + check_run.check_timings(run_dir, tiny_cfg, 2)
     assert [p for p in problems if "coverage" not in p] == []
+
+
+@pytest.mark.parametrize("deepcache", [False, True])
+def test_run_releases_its_pipeline(tiny_cfg, monkeypatch, deepcache):
+    """DeepCache's wrapped forwards hold its helper, and the helper holds the pipeline: a cycle
+    that outlived ``del pipe`` and showed in the next run's memory (job 99828: fp16 right after
+    deepcache_i3 peaked at 6.84 GB, 2.61 on its own)."""
+    built = []
+
+    def build(cfg):
+        pipe, helper, device = build_pipeline(cfg)
+        built.append(weakref.ref(pipe))
+        return pipe, helper, device
+
+    monkeypatch.setattr(benchmark, "build_pipeline", build)
+    gc.disable()  # only run() may collect, so a cycle left behind can't be cleared by chance
+    try:
+        benchmark.run(deep_merge(tiny_cfg, {"deepcache": {"enabled": deepcache}}))
+        assert built[0]() is None
+    finally:
+        gc.enable()

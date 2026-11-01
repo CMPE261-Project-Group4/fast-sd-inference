@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import platform
@@ -107,7 +108,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
     bs = cfg["batch_size"]
     batches = [prompts[i : i + bs] for i in range(0, len(prompts), bs)]
 
-    pipe, _helper, device = build_pipeline(cfg)
+    pipe, helper, device = build_pipeline(cfg)
     cuda = device == "cuda"
     env = _env_info(device, pipe)
     probe, timer = PipelineProbe(pipe), StageTimer(pipe, device)
@@ -174,7 +175,13 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
 
     probe.remove()
     timer.remove()
-    del pipe
+    # DeepCache's wrapped forwards hold its helper, and the helper holds the pipeline: a cycle
+    # that `del` doesn't free, so the pipeline and its cached features stayed on the GPU into the
+    # next run's memory figures (job 99828). Unwrap, then collect whatever cycles remain.
+    if helper is not None:
+        helper.disable()
+    del pipe, helper
+    gc.collect()
     if cuda:
         torch.cuda.empty_cache()
     return perf
