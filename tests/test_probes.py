@@ -1,14 +1,20 @@
+import gc
 import importlib.util
 import json
 import time
+import weakref
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import torch
+from diffusers.utils.torch_utils import randn_tensor
 
 from eldm import benchmark, probes
 from eldm.config import deep_merge
 from eldm.pipeline import build_pipeline
 from eldm.probes import PipelineProbe, StageTimer
+from eldm.prompts import Prompt
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("check_run", ROOT / "scripts/check_run.py")
@@ -115,3 +121,56 @@ def test_run_records_nfe_and_environment(tiny_cfg, monkeypatch):
     # PIL take about 9% of the time (job P5.1 checks it on the A100).
     problems = check_run.check_perf(run_dir, tiny_cfg, 2, None) + check_run.check_timings(run_dir, tiny_cfg, 2)
     assert [p for p in problems if "coverage" not in p] == []
+
+
+@pytest.mark.parametrize("deepcache", [False, True])
+def test_run_releases_its_pipeline(tiny_cfg, monkeypatch, deepcache):
+    """DeepCache's wrapped forwards hold its helper, and the helper holds the pipeline: a cycle
+    that outlived ``del pipe`` and showed in the next run's memory (job 99828: fp16 right after
+    deepcache_i3 peaked at 6.84 GB, 2.61 on its own)."""
+    built = []
+
+    def build(cfg):
+        pipe, helper, device = build_pipeline(cfg)
+        built.append(weakref.ref(pipe))
+        return pipe, helper, device
+
+    monkeypatch.setattr(benchmark, "build_pipeline", build)
+    gc.disable()  # only run() may collect, so a cycle left behind can't be cleared by chance
+    try:
+        benchmark.run(deep_merge(tiny_cfg, {"deepcache": {"enabled": deepcache}}))
+        assert built[0]() is None
+    finally:
+        gc.enable()
+
+
+class FakePipe:
+    """Records the pipeline call; has what _generate reads to shape the starting noise."""
+
+    vae_scale_factor = 8
+    device = torch.device("cpu")
+
+    def __init__(self, dtype) -> None:
+        self.unet = SimpleNamespace(config=SimpleNamespace(in_channels=4), dtype=dtype)
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(images=[])
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_starting_noise_is_per_prompt_and_drawn_in_float32_on_the_cpu(tiny_cfg, dtype):
+    """Each prompt's noise comes from its own CPU generator (diffusers recommends the CPU for
+    reproducibility) and is drawn in float32 whatever the pipeline's dtype: drawn in float16 it's
+    unrelated noise, and job 100435's fp16 run scored LPIPS 0.76 against the baseline. In float32
+    it's exactly the noise diffusers itself draws, so the fp32 runs didn't change."""
+    pipe = FakePipe(dtype)
+    batch = [Prompt(0, "a red cube", "manual", "objects", 1000), Prompt(1, "a blue sphere", "manual", "objects", 1001)]
+    benchmark._generate(pipe, tiny_cfg, batch)
+    [call] = pipe.calls
+    assert [(g.device.type, g.initial_seed()) for g in call["generator"]] == [("cpu", 1000), ("cpu", 1001)]
+    diffusers_fp32 = randn_tensor((2, 4, 4, 4), generator=[torch.Generator("cpu").manual_seed(s) for s in (1000, 1001)],
+                                  device=torch.device("cpu"), dtype=torch.float32)  # tiny_cfg is 32x32
+    assert call["latents"].dtype == dtype
+    assert torch.equal(call["latents"], diffusers_fp32.to(dtype))

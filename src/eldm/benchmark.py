@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import platform
@@ -31,11 +32,17 @@ def _sync(device: str) -> None:
         torch.mps.synchronize()
 
 
-def _generate(pipe, cfg: dict[str, Any], batch: list[Prompt], device: str):
+def _generate(pipe, cfg: dict[str, Any], batch: list[Prompt]):
     # One generator per prompt so every image depends only on its own seed,
-    # regardless of batch size.
-    gen_device = "cpu" if device == "mps" else device
-    generators = [torch.Generator(gen_device).manual_seed(p.seed) for p in batch]
+    # regardless of batch size. On the CPU, as diffusers recommends for reproducibility:
+    # a seed gives the same noise on any GPU model or on the CPU.
+    generators = [torch.Generator("cpu").manual_seed(p.seed) for p in batch]
+    # The starting noise is drawn in float32 and passed as `latents`, the way diffusers'
+    # maintainers advise for noise of your choosing (huggingface/diffusers#11056). Left to the
+    # pipeline, a CPU generator draws unrelated noise in float16, so fp16 runs started from other
+    # noise than the baseline (job 100435). In float32 it's the noise the pipeline itself draws.
+    shape = (1, pipe.unet.config.in_channels, cfg["height"] // pipe.vae_scale_factor, cfg["width"] // pipe.vae_scale_factor)
+    latents = torch.cat([torch.randn(shape, generator=g, dtype=torch.float32) for g in generators])
     return pipe(
         prompt=[p.prompt for p in batch],
         num_inference_steps=cfg["num_inference_steps"],
@@ -43,6 +50,7 @@ def _generate(pipe, cfg: dict[str, Any], batch: list[Prompt], device: str):
         height=cfg["height"],
         width=cfg["width"],
         generator=generators,
+        latents=latents.to(pipe.device, pipe.unet.dtype),
     ).images
 
 
@@ -107,13 +115,13 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
     bs = cfg["batch_size"]
     batches = [prompts[i : i + bs] for i in range(0, len(prompts), bs)]
 
-    pipe, _helper, device = build_pipeline(cfg)
+    pipe, helper, device = build_pipeline(cfg)
     cuda = device == "cuda"
     env = _env_info(device, pipe)
     probe, timer = PipelineProbe(pipe), StageTimer(pipe, device)
 
     for i in range(cfg["warmup_batches"]):
-        _generate(pipe, cfg, batches[i % len(batches)], device)
+        _generate(pipe, cfg, batches[i % len(batches)])
     _sync(device)
 
     if cuda:
@@ -129,7 +137,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
             timer.reset()
             _sync(device)
             t0 = time.perf_counter()
-            images = _generate(pipe, cfg, batch, device)
+            images = _generate(pipe, cfg, batch)
             _sync(device)
             dt = time.perf_counter() - t0
 
@@ -174,7 +182,13 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
 
     probe.remove()
     timer.remove()
-    del pipe
+    # DeepCache's wrapped forwards hold its helper, and the helper holds the pipeline: a cycle
+    # that `del` doesn't free, so the pipeline and its cached features stayed on the GPU into the
+    # next run's memory figures (job 99828). Unwrap, then collect whatever cycles remain.
+    if helper is not None:
+        helper.disable()
+    del pipe, helper
+    gc.collect()
     if cuda:
         torch.cuda.empty_cache()
     return perf

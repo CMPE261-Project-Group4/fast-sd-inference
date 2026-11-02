@@ -55,7 +55,7 @@ On coe-hpc1 and g17, run only editing, git, pip, downloads, unit tests and CPU c
 
 Submit from **g17**, from the **root of your clone**. Jobs find the clone they were submitted from, and write their log to `logs/<job-name>-<jobid>.out` in it, which you can also read from coe-hpc1:
 ```bash
-ssh coe-hpc3
+ssh coe-hpc3        # since 2026-11-01 this name doesn't resolve; from coe-hpc1, ssh g17 instead
 cd /data/cmpe261-fa26/group4/$USER/fast-sd-inference
 sbatch --test-only scripts/hpc/check_env.sbatch   # validates the request only; it does NOT submit
 sbatch scripts/hpc/check_env.sbatch               # prints "Submitted batch job <id>"
@@ -77,9 +77,9 @@ Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A
 sbatch --exclude=cs002 --time=00:30:00 scripts/hpc/run_gpu.slurm configs/experiments/00_baseline.yaml \
     --prompts-file data/prompts/subsets/debug.jsonl --output-root /scratch/cmpe261-fa26/group4/results/p5/debug_a
 ```
-That job (98330) took 10 minutes: 50 images at batch 1 and 50 at batch 4, FP32 with TF32 off.
+That job (98330) took 10 minutes: 50 images at batch 1 and 50 at batch 4, FP32 with TF32 off. The pilot, `configs/experiments/pilot.yaml` (5 runs × 200 images), took 50 minutes (job 100435); `--only <run>` reruns one run. For a sweep, `scripts/estimate_sweep.py` gives each run's time (PROGRESS.md, Phase 6).
 
-Quality is evaluated by a second GPU job, `scripts/hpc/evaluate.slurm <results_dir> <baseline_run_dir>`: CLIP Score, KID, LPIPS against the baseline (and FID from 5,000 COCO images) for every run under `<results_dir>`, then `check_run.py --expect-quality` and `summarize.py` into `<results_dir>/summary/`. One A100, 30 minutes by default; 4 runs of 50 images took 73 s (job 98332). To start it when the runs succeed, submit it with `--dependency=afterok:<jobid>:<jobid>`.
+Quality is evaluated by a second GPU job, `scripts/hpc/evaluate.slurm <results_dir> <baseline_run_dir>`: CLIP Score, KID, LPIPS against the baseline (and FID from 5,000 COCO images) for every run under `<results_dir>`, then `check_run.py --expect-quality` and `summarize.py` into `<results_dir>/summary/`. One A100, 30 minutes by default; 4 runs of 50 images took 73 s (job 98332), the pilot's 5 runs of 200 about 2.5 minutes (job 100436). To start it when the runs succeed, submit it with `--dependency=afterok:<jobid>:<jobid>`.
 
 **Add `--exclude=cs002` to every GPU job** until the admins fix its GPU 0 (§7).
 
@@ -211,7 +211,8 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `src/eldm/metrics.py` | CLIP Score by hand (ViT-g/14, ViT-L/14), KID and FID (`InceptionMetrics`, reference features reused), per-image LPIPS |
 | `scripts/run_experiments.py` | runs an experiment file's runs; `--only`, `--prompts-file`, `--num-prompts`, `--output-root` |
 | `scripts/evaluate_quality.py`, `scripts/hpc/evaluate.slurm` | quality metrics per run: `quality.json` (means, KID, FID or why skipped) and `quality_per_image.csv`; the job also checks and summarizes |
-| `scripts/summarize.py` | one row per run into `summary.csv` (`--csv`), speedups against `--baseline`, plots and an image grid |
+| `scripts/summarize.py` | one row per run into `summary.csv` (`--csv`), speedups against `--baseline`, plots and an image grid (`--grid-runs`, `--grid-ids`); `--by source\|category\|challenge` adds per-group quality tables, `--omit` drops columns |
+| `scripts/estimate_sweep.py` | a sweep's GPU-hours from the pilot's timings: exact UNet call counts per run, a cost model checked on held-out pilot runs, totals per prompt set |
 | `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5. |
 | `data/prompts/eval_prompts.jsonl`, `data/prompts/subsets/` | the frozen prompt set and its subsets; never edit by hand ([data/prompts/README.md](../../data/prompts/README.md)) |
 | `scripts/prepare_prompts.py` | rebuilds the frozen prompt files from the shared datasets (about 3 s on coe-hpc1) |
@@ -226,9 +227,11 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `error: … is not a fast-sd-inference clone` | the same | the same |
 | The job landed on a P100 or an H100 | a plain `--gres=gpu:1` | `--gres=gpu:a100:1` |
 | `CUDA error: CUDA-capable device(s) is/are busy or unavailable` on an idle GPU | a broken GPU: GPU 0 on cs002 since at least 2026-10-27 (job 98023). Slurm hands out the lowest free index, so 1-GPU jobs on an otherwise idle cs002 always get it | resubmit with `sbatch --exclude=cs002 …`. On another node, run `scripts/hpc/gpu_diagnose.sbatch` with `--nodelist=<node>` to confirm, then exclude that node and tell the HPC admins the node, GPU index and UUID |
+| A CUDA `RuntimeError` such as `No CUDA GPUs are available` at model load, while the job log's `nvidia-smi` lists the GPU | CUDA can't use the allocated GPU: cs001's GPUs 1–3, whose utilization reads `[N/A]` (found by job 99031 on 2026-10-31; when it started isn't known). `run_gpu.slurm` and `evaluate.slurm` pass `--device cuda` for this reason: under the configs' `auto`, job 99031 ran on the CPU at 108 s/image, and its `perf.json` says `"device": "cpu"` | the same as the row above: `gpu_diagnose.sbatch --nodelist=<node>`, then exclude the node and tell the HPC admins |
+| A job stays pending with reason `DependencyNeverSatisfied` | the job it waits on with `afterok` failed, timed out or was cancelled, so it will never start (jobs 99032 and 99034, after 99031) | `scancel <jobid>`; fix the first job, then submit both again |
 | `Requested node configuration is not available` | more than 2 CPUs on `defq` | use `-c 2`, or `cpuqs` |
 | `check_env` fails "venv matches requirements.lock" | someone ran pip in the shared venv | when no jobs run, rerun `scripts/hpc/setup_env.sh`, which rebuilds the venv |
-| `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 | don't use CLIPScore: `eldm.metrics.ClipScorer` computes CLIP Score by hand (Phase 5). `check_assets.py` keeps the `CLIPTensorFeatures` adapter for its own check |
+| `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 ([Lightning-AI/torchmetrics#3407](https://github.com/Lightning-AI/torchmetrics/issues/3407): fixed on torchmetrics' master in July 2026, not in a release as of 1.9.0) | don't use CLIPScore yet: `eldm.metrics.ClipScorer` computes CLIP Score by hand, with the same formula and the same `pooler_output` unwrap as the fix (Phase 5). Once a torchmetrics release has the fix, move ViT-L/14 to CLIPScore, the method diffusers documents; ViT-g/14 stays on open_clip, since its weights exist only in open_clip's format. `check_assets.py` keeps the `CLIPTensorFeatures` adapter for its own check |
 | `check_run` says stage coverage is outside (0.9, 1.01) | the three stage times don't add up to the batch's end-to-end time: something else in the pipeline call took over 10% (a slow image save doesn't count; it's outside the timer) | look at that batch in `timings.jsonl`; on a very fast config, the PIL conversion's share can grow, so report it before changing the bound |
 | Timings vary between runs | shared nodes: other jobs use the CPUs; GPUs aren't isolated | set thread counts; repeat runs; compare runs on the same node |
 | `check_run.py` takes minutes on coe-hpc1 | it reads every image, and files not yet cached come over shared storage: 200 PNGs took 160 s cold, at 5 % of a CPU, and 1.5 s cached | it's waiting on storage, not loading the node; for large result sets use the check inside `evaluate.slurm` |

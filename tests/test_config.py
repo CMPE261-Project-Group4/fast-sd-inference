@@ -27,8 +27,22 @@ def test_experiment_files_resolve(path):
 
 
 def test_run_names_unique_across_files():
-    names = [r["name"] for p in (ROOT / "configs/experiments").glob("*.yaml") for r in load_experiment(p, ROOT)]
+    # The numbered files are the sweep; pilot.yaml repeats some of their runs on purpose.
+    names = [r["name"] for p in (ROOT / "configs/experiments").glob("[0-9][0-9]_*.yaml")
+             for r in load_experiment(p, ROOT)]
     assert len(names) == len(set(names))
+
+
+def test_pilot_runs_match_the_sweep():
+    """Each pilot run is the 00-04 run of the same name, on the pilot prompts."""
+    sweep = {r["name"]: r for p in (ROOT / "configs/experiments").glob("0[0-4]_*.yaml")
+             for r in load_experiment(p, ROOT)}
+    pilot = load_experiment(ROOT / "configs/experiments/pilot.yaml", ROOT)
+    assert [r["name"] for r in pilot] == ["baseline", "ddim_20", "dpmpp_20", "deepcache_i3", "fp16"]
+    for run in pilot:
+        assert run["prompts_file"] == "data/prompts/subsets/pilot.jsonl"
+        assert run == {**sweep[run["name"]], "prompts_file": run["prompts_file"]}
+    assert len(load_prompts(ROOT / pilot[0]["prompts_file"])) == 200
 
 
 def test_prompts_roundtrip(tmp_path):

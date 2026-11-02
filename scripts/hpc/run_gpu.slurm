@@ -23,4 +23,6 @@ source "${CLONE}/scripts/hpc/job_prelude.sh"
 
 # Experiment files name configs/base.yaml and data/prompts/... relative to the repo root.
 cd "${CLONE}"
-python scripts/run_experiments.py --output-root "${ELDM_RESULTS}" "$@"
+# --device cuda, not the configs' "auto": a GPU that CUDA can't use must fail the job, not
+# move it to the CPU (job 99031 ran at 108 s/image on cs001's CPUs). A --device in "$@" still wins.
+python scripts/run_experiments.py --output-root "${ELDM_RESULTS}" --device cuda "$@"

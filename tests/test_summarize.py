@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import yaml
+
+from eldm.prompts import Prompt, save_prompts
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("summarize", ROOT / "scripts/summarize.py")
@@ -28,6 +31,52 @@ def make_run(root: Path, rel: str, latency: float, quality: dict | None = None, 
 
 QUALITY = {"clip_vitg": 38.0, "clip_vitl": 31.0, "kid_mean": 0.004, "kid_std": 0.0006,
            "lpips_to_baseline": 0.0, "fid_skipped": "50 COCO images; FID needs at least 5,000"}
+
+# Two COCO prompts and two PartiPrompts, as in data/prompts (Prompt: id, prompt, source,
+# category, seed, coco_image_id, challenge).
+PROMPTS = [Prompt(0, "a", "coco", "coco", 1000, 42), Prompt(1, "b", "coco", "coco", 1001, 43),
+           Prompt(2000, "c", "parti", "Animals", 3000, None, "Basic"),
+           Prompt(2001, "d", "parti", "Animals", 3001, None, "Quantity")]
+
+
+def add_per_image(run: Path, prompts_file: Path, clip_vitg: list[float]) -> None:
+    """The config.yaml and quality_per_image.csv that eldm.benchmark.run and evaluate_quality.py write."""
+    (run / "config.yaml").write_text(yaml.safe_dump({"name": run.name, "prompts_file": str(prompts_file),
+                                                     "num_prompts": None}))
+    pd.DataFrame({"id": [p.id for p in PROMPTS], "clip_vitg": clip_vitg, "clip_vitl": [25.0] * 4,
+                  "lpips_to_baseline": [0.0, 0.2, 0.4, 0.6]}).to_csv(run / "quality_per_image.csv", index=False)
+
+
+def test_by_group(tmp_path):
+    save_prompts(PROMPTS, tmp_path / "prompts.jsonl")
+    base, fast = make_run(tmp_path, "p6/baseline", 6.0, QUALITY), make_run(tmp_path, "p6/fp16", 2.0, QUALITY)
+    add_per_image(base, tmp_path / "prompts.jsonl", [30.0, 32.0, 28.0, 26.0])
+    add_per_image(fast, tmp_path / "prompts.jsonl", [29.0, 31.0, 27.0, 25.0])
+
+    table = summarize.by_group([base, fast], "source")
+    assert list(table.columns) == ["run", "name", "source", "n", "clip_vitg", "clip_vitl", "lpips_to_baseline"]
+    assert list(zip(table["run"], table["source"], table["n"])) == [
+        ("baseline", "coco", 2), ("baseline", "parti", 2), ("fp16", "coco", 2), ("fp16", "parti", 2)]
+    assert list(table["clip_vitg"]) == pytest.approx([31.0, 27.0, 30.0, 26.0])
+    assert list(table["lpips_to_baseline"]) == pytest.approx([0.1, 0.5, 0.1, 0.5])
+
+    by_challenge = summarize.by_group([base], "challenge")  # COCO prompts have none
+    assert list(zip(by_challenge["challenge"], by_challenge["n"])) == [("(none)", 2), ("Basic", 1), ("Quantity", 1)]
+    assert summarize.by_group([tmp_path / "missing"], "source").empty
+
+
+def test_main_by_and_omit(tmp_path):
+    save_prompts(PROMPTS, tmp_path / "prompts.jsonl")
+    run = make_run(tmp_path, "p6/baseline", 6.0, QUALITY)
+    add_per_image(run, tmp_path / "prompts.jsonl", [30.0, 32.0, 28.0, 26.0])
+    out = tmp_path / "report"
+    summarize.main(["--runs", str(run), "--csv", str(out / "summary.csv"), "--out", str(out),
+                    "--by", "source", "category", "--omit", "kid_mean", "kid_std"])
+    assert not {"kid_mean", "kid_std"} & set(pd.read_csv(out / "summary.csv").columns)
+    assert list(pd.read_csv(out / "summary_by_source.csv")["source"]) == ["coco", "parti"]
+    assert list(pd.read_csv(out / "summary_by_category.csv")["category"]) == ["Animals", "coco"]
+    with pytest.raises(SystemExit):
+        summarize.main(["--runs", str(run), "--csv", str(out / "x.csv"), "--out", str(out), "--omit", "kid"])
 
 
 def test_columns_and_run_paths(tmp_path):
