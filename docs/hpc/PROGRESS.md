@@ -15,8 +15,8 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2 Offline assets | `hpc/p2-assets` | everything loads on HPC3 offline | **pass** (2026-10-19, job 92251; job 92223 failed first) |
 | 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | **pass** (2026-10-28, job 98056; job 97329 failed first on a broken GPU) |
 | 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | **pass** (2026-10-28; no job: built and checked on coe-hpc1) |
-| 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | **pass** (2026-10-29, jobs 98329–98332); awaiting Dan's approval |
-| 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | not started |
+| 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | **pass** (2026-10-29, jobs 98329–98332); approved by Dan (2026-10-30) |
+| 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | **pass** (2026-11-02, jobs 100435, 100436, 100547, 100548); Dan picks the sweep size |
 | 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | not started |
 | 8 Sweeps (G3) | `hpc/p8-sweeps` | Dan confirms combined settings | not started |
 | 9 Combined + FID | `hpc/p9-combined` | final summaries | not started |
@@ -36,10 +36,113 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-10-29 | 98330 | P5.2 debug run A: `run_gpu.slurm 00_baseline.yaml --prompts-file data/prompts/subsets/debug.jsonl`, into `p5/debug_a` (1× A100, 8 CPUs, 32G, 30 min) | cs001, GPU 0 | COMPLETED 0:0 in 10m00s, MaxRSS 1.7 GB; `baseline` and `baseline_bs4`, 50 images each. Its only neighbour on the node was 98331 |
 | 2026-10-29 | 98331 | P5.3 debug run B: the same, into `p5/debug_b` | cs001, GPU 1 | COMPLETED 0:0 in 9m59s, MaxRSS 1.4 GB; ran alongside 98330 |
 | 2026-10-29 | 98332 | P5.4 `evaluate.slurm p5 p5/debug_a/baseline`, after `afterok:98330:98331` (1× A100, 8 CPUs, 32G, 30 min) | cs001, GPU 0 | COMPLETED 0:0 in 1m13s, MaxRSS 5.7 GB; quality files for all 4 runs, `check_run.py --expect-quality` passes all 4, `p5/summary/` written; **Phase 5 gate passed** |
+| 2026-10-30 | 99002 | GPU diagnostic on cs002's GPU 0, to report it (`gpu_diagnose.sbatch --nodelist=cs002`) | cs002, GPU 0 | COMPLETED 0:0 in 8 s. Still broken: 5,562 uncorrectable DRAM ECC errors, "Remapping Failure Occurred: Yes"; every allocation fails (Phase 6's findings) |
+| 2026-10-31 | 99031 | P6.1 tiny pilot: `run_gpu.slurm pilot.yaml --num-prompts 2` into `p6/tiny` (1× A100, 8 CPUs, 32G, 10 min), from dac29a5 | cs001, GPU 1 | TIMEOUT in 10m05s, MaxRSS 6.6 GB. CUDA couldn't use GPU 1, and the configs' `device: auto` fell back to the CPU: 108 s/image. Fixed by 1e8652a. Its dependents 99032 (P6.2) and 99034 (P6.3) never started (`DependencyNeverSatisfied`); Dan cancelled them. Co-tenant: 99052 (another user, 1× A100) |
+| 2026-11-01 | 99828 | P6.1 again, from d68934a | cs001, GPU 0 | COMPLETED 0:0 in 1m38s, MaxRSS 3.6 GB; 5 runs × 2 images on CUDA, `ddim_20`'s first GPU run, every NFE as predicted. fp16 peaked at 6.84 GB: the DeepCache run's pipeline was never freed (fixed by 541ce83) |
+| 2026-11-01 | 99829 | P6.2 pilot, from d68934a (still leaking) | cs001, GPU 0 | Cancelled by Dan after 19m36s, with the leak found; its evaluation 99830 never started |
+| 2026-11-02 | 100435 | P6.2 pilot: `run_gpu.slurm pilot.yaml` into `p6/pilot` (1× A100, 8 CPUs, 32G, 1h15), from 2ce96f7 | cs001, GPU 0 | COMPLETED 0:0 in 49m57s, MaxRSS 3.7 GB; 5 runs × 200 images. fp16 peaked at 2.61 GB, so the leak is fixed; its images started from other noise than the baseline's (fixed by fe478dc), so fp16 was rerun. Alone on the node |
+| 2026-11-02 | 100436 | P6.3 `evaluate.slurm p6/pilot p6/pilot/baseline`, after `afterok:100435` (20 min) | cs001, GPU 0 | COMPLETED 0:0 in 2m30s, MaxRSS 6.1 GB; `check_run.py --expect-quality` passes all 5; fp16's LPIPS to the baseline 0.76 showed the noise problem |
+| 2026-11-02 | 100547 | P6.2b: `run_gpu.slurm pilot.yaml --only fp16` into `p6/pilot` (15 min), from fe478dc; job 100435's fp16 moved to `p6/fp16_job100435` | cs001, GPU 0 | COMPLETED 0:0 in 5m26s, MaxRSS 2.8 GB; 1.468 s/image (1.453 in 100435), 2.61 GB peak. Alone on the node |
+| 2026-11-02 | 100548 | P6.3b `evaluate.slurm p6/pilot p6/pilot/baseline`, after `afterok:100547` (15 min) | cs001, GPU 0 | COMPLETED 0:0 in 2m17s, MaxRSS 2.0 GB; all 5 pass, fp16's LPIPS to the baseline 0.012; **gate G2's numbers** |
+
+## Phase 6: Pilot, R5 and D5, gate G2 (2026-10-30 to 2026-11-02)
+
+### Gate G2: pass; Dan picks the sweep size
+
+The five pilot runs on `data/prompts/subsets/pilot.jsonl` (100 COCO + 100 PartiPrompts, the same prompts and seeds in every run) ran on cs001's GPU 0 with no other job on the node: job 100435 from commit 2ce96f7, except `fp16`, rerun by job 100547 from fe478dc after the noise fix below. Job 100548 scored all five, and `check_run.py --expect-quality` passes all five. Every `perf.json` has `git_dirty: false` and both TF32 flags off.
+
+| Run | s/image | Speedup | Peak GB | `nfe` (`nfe_full`) | CLIP ViT-g/14: all (COCO / Parti) | CLIP ViT-L/14 | LPIPS to baseline |
+|---|---|---|---|---|---|---|---|
+| baseline: PNDM 50 steps, FP32 | 5.775 | 1.00× | 4.76 | 51 (51) | 30.46 (30.62 / 30.30) | 27.40 | 0 |
+| `ddim_20` | 2.340 | 2.47× | 4.76 | 20 (20) | 30.47 (30.49 / 30.46) | 27.35 | 0.346 |
+| `dpmpp_20`: DPM-Solver++ 2M | 2.344 | 2.46× | 4.76 | 20 (20) | 30.57 (30.52 / 30.62) | 27.42 | 0.255 |
+| `deepcache_i3`: interval 3 | 2.357 | 2.45× | 4.97 | 51 (17) | 30.56 (30.41 / 30.71) | 27.40 | 0.259 |
+| `fp16` | 1.468 | 3.93× | 2.61 | 51 (51) | 30.45 (30.57 / 30.33) | 27.36 | 0.012 |
+
+Stage coverage is 0.992–0.998. KID isn't reported from the pilot (decision below), so `report/pilot/summary.csv` leaves it out.
+
+**The sweep's cost** (`report/pilot/sweep_estimate.csv`): the 17 runs of `00`–`04` plus the second-node baseline rerun.
+
+| Prompt set | Sweep | Wall time on 4 GPUs | Phase 9's `05_combined`, separately |
+|---|---|---|---|
+| all of `eval_prompts.jsonl` (3,632) | **65.5 GPU-h** (62.8 generation + 2.7 evaluation) | 16.4 h | 4.1 GPU-h |
+| `subsets/parti_550.jsonl` (2,550) | **46.0 GPU-h** (44.1 + 1.9) | 11.5 h | 2.9 GPU-h |
+
+- The cost model is fitted on `baseline`, `fp16` and `deepcache_i3`. It predicts the held-out `ddim_20` and `dpmpp_20` within +0.2 % and −0.0 %.
+- Per image, FP32: a full UNet call costs 0.111 s, a call DeepCache serves from its cache 0.010 s, and the rest of the pipeline 0.129 s. FP16: 0.028, 0.0025 and 0.062 s.
+- Runs the pilot didn't measure come from the model: PNDM at 10, 20 and 30 steps, the 50-step DDIM, DPM-Solver++ and Euler runs, Euler 20, DeepCache intervals 2 and 5, and the batch-4 runs. Batch 4 uses FP32's measured ratio, 0.838 (Phase 5's `debug_a`); for `fp16_bs4` that's an assumption.
+- Job overhead (loading, warm-up, saving PNGs) is 0.112 s per image, from job 100435's 2,997 s; evaluation is 0.150 s per image, from job 100436's 150 s.
+
+**PLAN.md's sanity checks:**
+
+| Check | Result |
+|---|---|
+| The baseline's ViT-g/14 CLIP Score against DeepCache's published 50-step PLMS numbers: 30.30 (COCO), 29.51 (PartiPrompts) | 30.62 and 30.30: within 0.8, on 100 prompts each against the paper's full sets |
+| The 20-step runs are the fastest FP32 runs | **yes**, narrowly: 2.340 and 2.344 s against `deepcache_i3`'s 2.357. FP16 is the fastest run overall |
+| DeepCache's speedup against the paper's ≈1.7× (an RTX 2080) | 2.45× at interval 3, closer to the paper's headline 2.3× for SD1.5. A cached call costs 9 % of a full one here |
+| FP16 is faster and smaller | **yes**: 3.93× faster, 2.61 GB peak against 4.76, and LPIPS 0.012 against the baseline: nearly the same images |
+
+All five runs' ViT-g/14 CLIP Scores are within 0.12 of the baseline's. At 200 prompts that's noise, so the pilot says nothing yet about quality differences. The quality-vs-latency plot's axis spans only those 0.12 points, which makes them look large.
+
+### What went wrong, and the fixes
+
+1. **Job 99031 ran on the CPU.** P6.1 landed on cs001's GPU 1, which CUDA can't use (findings). Under the configs' `device: auto`, the run fell back to the CPU at 108 s/image and timed out. 1e8652a makes `run_gpu.slurm` and `evaluate.slurm` pass `--device cuda`, so a GPU that CUDA can't use fails the job instead. d68934a adds each GPU's MIG mode to `gpu_diagnose.sbatch`.
+2. **DeepCache kept each pipeline alive (job 99828).** fp16, which ran right after `deepcache_i3`, peaked at 6.84 GB against 2.61 GB on its own (Phase 5). DeepCache replaces the UNet's `forward` methods with wrappers that hold its helper, and the helper holds the pipeline: a reference cycle that `del pipe` and `empty_cache()` don't free, so the DeepCache run's FP32 pipeline (about 4.2 GB) was still allocated. Only memory figures were affected, never speed or images. 541ce83 follows the documented cleanup: DeepCache's `helper.disable()` after generating, then `gc.collect()` and `torch.cuda.empty_cache()`, the `flush()` diffusers' own benchmarks run between runs. Job 100435 confirms it: fp16 peaked at 2.61 GB after `deepcache_i3`.
+3. **CPU generators gave fp16 other noise (job 100435).** On 2026-11-02 Dan chose to follow the libraries' documented methods, so 2ce96f7 draws each prompt's noise from a CPU generator, as [diffusers recommends](https://huggingface.co/docs/diffusers/en/using-diffusers/reusing_seeds). But diffusers draws the noise in the pipeline's dtype, and a CPU generator's float16 draw is unrelated to its float32 draw from the same seed (correlation −0.015). So job 100435's fp16 images started from other noise than the baseline's, and scored LPIPS 0.76 against it. CUDA generators don't do this, which is why Phase 3's fp16 matched. fe478dc draws the noise in float32 and passes it as `latents`, as diffusers' maintainers advise ([diffusers#11056](https://github.com/huggingface/diffusers/issues/11056)). For FP32 runs that's exactly the noise the pipeline drew itself (pixel-identical on the tiny pipeline), so only fp16 was rerun: LPIPS 0.012. Job 100435's fp16 run is kept in `p6/fp16_job100435`.
+
+### Commits
+
+- `13c0548 exp: add pilot experiment`: `configs/experiments/pilot.yaml`; a test checks each pilot run equals the sweep run of the same name except for `prompts_file`.
+- `4b053ab feat(viz): per-group quality tables and column selection in summarize.py`: `--by source|category|challenge` and `--omit`.
+- `dac29a5 feat(exp): estimate sweep GPU-hours from pilot timings`: `scripts/estimate_sweep.py`.
+- `1e8652a fix(hpc): GPU jobs require CUDA instead of falling back to the CPU`. Its message ties cs001's GPU state to a slurmd restart on cs001 at about 22:50 on 2026-10-30. That restart was cluster-wide (cs002 shows the same `SlurmdStartTime`), and when GPUs 1–3 became unusable isn't known. History isn't rewritten.
+- `d68934a feat(hpc): gpu_diagnose shows each GPU's MIG mode`
+- `541ce83 fix(bench): free each run's pipeline before the next run starts`
+- `2ce96f7 feat(bench): draw each prompt's starting noise from a CPU generator`
+- `fe478dc fix(bench): draw the starting noise in float32 so fp16 starts where the baseline does`
+- `results: pilot summary and sweep estimate` (this commit): `report/pilot/`, this log, README.md and DEVELOPMENT.md.
+
+### Findings
+
+- **cs002's GPU 0 is a hardware fault** (job 99002, 2026-10-30): 73 volatile and 5,562 aggregate uncorrectable DRAM ECC errors, 8 rows remapped for uncorrectable errors, and "Remapping Failure Occurred: Yes". All four allocation probes fail. Keep `--exclude=cs002`; Dan reports it.
+- **CUDA can't use cs001's GPUs 1–3.** They read utilization `[N/A]` and 1 MiB used, and CUDA found no usable device on GPU 1 (job 99031). Slurm still hands them out, so a job on cs001 works only when it gets GPU 0. Every Phase 6 job after 99031 got GPU 0. A guess, not confirmed: MIG mode on with no instances. `sbatch --nodelist=cs001 --gres=gpu:a100:3 scripts/hpc/gpu_diagnose.sbatch` would show it, while the node is otherwise free.
+- **`coe-hpc3` stopped resolving on 2026-11-01**, even from coe-hpc1. `ssh g17` from coe-hpc1 reaches the same head node.
+- **Timings repeat.** The baseline ran at 5.779 s/image over its first 50 images and 5.772 over its last 50, the same as Phase 5's 50-image run (5.767, with CUDA generators). fp16 ran at 1.453 s/image in job 100435 and 1.468 in job 100547 (+1.0 %), on the same GPU.
+- **CPU generators cost nothing measurable.** With our schedulers the only random draw is each image's 4×64×64 starting noise; PNDM never draws more, DDIM only at eta > 0, Euler only at `s_churn` > 0, DPM-Solver++ only in its SDE variants.
+- **DeepCache holds 0.21 GB of cached features** after the warm-up: 4.22 GB allocated before the timed batches against the baseline's 4.01, and a 4.97 GB peak against 4.76.
+- **Three different speedups cost the same here.** 20 DDIM or DPM-Solver++ calls, and DeepCache's 17 full plus 34 cached calls, all take 2.34–2.36 s/image.
+- **DDIM changes the images most** (LPIPS 0.346 against the baseline, against 0.255 and 0.259 for DPM-Solver++ and DeepCache). In the grid's first row, its tennis player has a different pose.
+- **Evaluation is fast:** 1,000 images scored in 137–150 s.
+
+### Decisions
+
+- **Phase 5 approved** (Dan merged PR #7, 2026-10-30).
+- **KID: option (a)** (Dan, 2026-10-30): the code stays as it is; KID is read only from the sweeps, and the pilot's tables leave it out.
+- **No new GitHub tooling** (Dan, 2026-10-30): no CI, PR template or branch-protection docs.
+- **The sweep's GPU-hours are modeled from the pilot's timings,** with no extra probe job (Dan, 2026-10-30).
+- **Follow the libraries' documented methods over our own** (Dan, 2026-11-02): CPU generators per prompt, with the noise drawn in float32 and passed as `latents`; between runs, DeepCache's `disable()` and diffusers' `flush()` pattern, in one process; CLIP Score stays by hand until a torchmetrics release fixes CLIPScore for transformers 5 (open issues).
+- **PNG figures aren't committed.** Dan's rule is never to commit images, so `report/figures/pilot/` is regenerated from the commands below and kept in `/scratch/cmpe261-fa26/group4/results/p6/figures/`.
+
+### Outputs and how to regenerate them
+
+Locked with `chmod -R a-w`: `/scratch/cmpe261-fa26/group4/results/p6/` (`pilot`, `tiny` from job 99828, `fp16_job100435`, `figures`). Phase 6's jobs used 1.53 GPU-hours, failures included, of 3.8 requested.
+
+On coe-hpc1, from the repo root, with `env/site.sh` sourced (a few seconds each):
+
+```bash
+R=/scratch/cmpe261-fa26/group4/results
+python scripts/summarize.py --runs "$R/p6/pilot/*" --baseline $R/p6/pilot/baseline \
+    --csv report/pilot/summary.csv --by source --omit kid_mean kid_std --out report/figures/pilot \
+    --grid-runs baseline ddim_20 dpmpp_20 deepcache_i3 fp16 --grid-ids 0 1 2006 2012
+python scripts/estimate_sweep.py --pilot "$R/p6/pilot/*" --pilot-elapsed-s 2997 --eval-elapsed-s 150 \
+    --batch-pair $R/p5/debug_a/baseline $R/p5/debug_a/baseline_bs4 --csv report/pilot/sweep_estimate.csv
+```
+
+The grid shows the pilot's first two COCO prompts (ids 0 and 1) and first two PartiPrompts (2006, 2012), not ones picked by eye, with the runs as columns in the order given.
 
 ## Phase 5: Measurement correctness, R4 and D3 (2026-10-29)
 
-### Gate: pass (jobs 98329–98332; awaiting Dan's approval)
+### Gate: pass (jobs 98329–98332; approved by Dan, 2026-10-30)
 
 Dan submitted the four jobs, all with `--exclude=cs002`. They ran from commit `aaba3a0` with a clean tree (`git_dirty: false` in every `perf.json`), offline, on cs001, with both TF32 flags off. `check_run.py` decides each check.
 
@@ -367,7 +470,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
 5. **Missing directories.** `group4/cache/` and `datasets/{coco,partiprompts}` don't exist yet. `setup_env.sh` and `fetch_datasets.sh` create them.
 6. **umask.** Interactive shells here default to umask 0022. Every command that creates files must run `umask 002` first, or source `env/site.sh`.
 7. **Git.** No global identity exists, so commits use the repo-local config. SSH to GitHub works, so only the rule stops a push.
-8. **coe-hpc1 has its own Slurm 18.08 client** (`/usr/bin/sbatch`, `sinfo`). It doesn't see HPC3. All queries go through `ssh coe-hpc3`.
+8. **coe-hpc1 has its own Slurm 18.08 client** (`/usr/bin/sbatch`, `sinfo`). It doesn't see HPC3. All queries go through `ssh coe-hpc3` (or `ssh g17` while that name doesn't resolve, Phase 6).
 9. **Phase 1 pins.**
    - I dry-ran `pip install --dry-run --only-binary=:all:` with CPython 3.11.16 on coe-hpc1, and the whole stack resolves on glibc 2.17. The manylinux_2_28 fallback isn't needed.
    - The wheels are all `manylinux2014` or older: torch 2.6.0 and its nvidia-*-cu12 12.4.x dependencies, and triton 3.2.0. torch 2.7.0 is `manylinux_2_28` only, which confirms the brief.
@@ -413,17 +516,20 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
   - Scripts: `prefetch_assets.py` and `fetch_datasets.sh` run on coe-hpc1; `check_assets.sbatch` is the HPC3 gate.
 - **Prompt set** (Phase 4): `data/prompts/eval_prompts.jsonl` and `subsets/`, built by `scripts/prepare_prompts.py` with `--sample-seed 0 --base-seed 1000`; see [data/prompts/README.md](../../data/prompts/README.md).
 - **Measurement** (Phase 5): TF32 off; NFE as `nfe` and `nfe_full`; stage times with CUDA events; CLIP Score by hand with ViT-g/14 (primary) and ViT-L/14; KID with subsets of min(1000, n); FID only from 5,000 COCO images. See Phase 5's decisions.
+- **Starting noise** (Phase 6): one CPU generator per prompt, seeded with the prompt's seed; the noise is drawn in float32 and passed as `latents`, cast to the run's dtype. Runs before fe478dc (Phases 3–5, and job 99828) used CUDA generators, so their images don't match later ones. See Phase 6.
 - **Versions are unchanged** despite the CLIPScore incompatibility (Dan, 2026-10-19). An adapter is used instead of `transformers<5`.
 - **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
 
 ## Open issues
 
 - **The whole class is in the group.** `cmpe261-fa26` has 19 members, so every classmate can write to and delete from `group4/`. There's no team-only group. Locking finished data with `chmod -R a-w` is the only guard. Dan could ask the admins for a team group.
-- **GPU 0 on cs002 is broken (found 2026-10-28, job 98023).** Submit GPU jobs with `--exclude=cs002` until the admins fix it; Dan reports it to them. Details are in Phase 3's findings.
+- **GPU 0 on cs002 is broken (found 2026-10-28, job 98023).** Submit GPU jobs with `--exclude=cs002` until the admins fix it; Dan reports it to them. Details are in Phase 3's findings; job 99002 (Phase 6) shows a hardware fault: uncorrectable ECC errors and a failed row remap.
+- **CUDA can't use cs001's GPUs 1–3 (found 2026-10-31, job 99031).** Slurm still allocates them, and a job that gets one fails at model load (`--device cuda`, since 1e8652a). Dan reports it with cs002's GPU; `gpu_diagnose.sbatch --nodelist=cs001 --gres=gpu:a100:3` would show their MIG mode. Until then a job on cs001 works only on GPU 0; resubmit one that fails there.
+- **`coe-hpc3` doesn't resolve (since 2026-11-01).** Use `ssh g17` from coe-hpc1; it's the same head node. Dan reports it.
 - **CPU threads aren't limited to the allocation. Handled since Phase 3.** In job 92197 (`-c 2`), torch picked 28 threads, all of c19's physical cores. This fits correction 2: cgroups don't confine the job. `job_prelude.sh` sets `OMP_NUM_THREADS` and `MKL_NUM_THREADS` from `SLURM_CPUS_PER_TASK`.
 - **Resolved in Phase 5 (Dan, 2026-10-28): CLIP Score is computed by hand, so the metric code doesn't use CLIPScore.** The original issue: torchmetrics' CLIPScore doesn't work with transformers 5 (found by job 92223).
   - **The cause:** in transformers 5.20.1, `CLIPModel.get_image_features` and `get_text_features` return a `BaseModelOutputWithPooling`, with the projected embedding in `.pooler_output`. transformers 4.x returned the tensor itself. torchmetrics 1.9.0 calls `.norm()` on the result and fails with `AttributeError: 'BaseModelOutputWithPooling' object has no attribute 'norm'`.
-  - **No fix exists upstream.** 1.9.0 (2026-03-09) is the latest torchmetrics release.
+  - **Fixed upstream, not released.** [Lightning-AI/torchmetrics#3407](https://github.com/Lightning-AI/torchmetrics/issues/3407) was fixed on torchmetrics' master in July 2026, with the same `.pooler_output` unwrap our code uses; 1.9.0 (2026-03-09) is still the latest release (checked 2026-11-02). Once a release has the fix, CLIP ViT-L/14 moves to CLIPScore, the method diffusers documents (Dan, 2026-11-02: follow the libraries' methods). ViT-g/14 stays on open_clip, since its weights exist only in open_clip's format.
   - **Downgrading is costly.** The last transformers 4.x release (4.57.6) needs `huggingface_hub<1.0`, but diffusers 0.41 needs `>=1.32`. So `transformers<5` would also downgrade diffusers, mean rebuilding the venv, and redo the Phase 1 gate.
   - **Decision (Dan, 2026-10-19): keep the package versions and use an adapter.**
     - The adapter is a `CLIPModel` subclass whose `get_image_features` and `get_text_features` return `.pooler_output`. It's passed to CLIPScore through its callable loader, with the model loaded from the pinned snapshot.
@@ -431,8 +537,8 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - A score computed by hand, `100 * max(cos, 0)`, also gives 20.45, so the metric's definition doesn't change.
   - **Proposed for Phase 5:** use the same adapter in `src/eldm/metrics.py`, or compute the per-image score by hand, which `quality_per_image.csv` needs anyway. Dan confirms which in Phase 5.
 - **coe-hpc1 has an old NVIDIA driver (CUDA 10.1).** torch prints a harmless warning there when it probes CUDA. We never use a GPU on coe-hpc1.
-- **KID below 1,001 COCO images (found 2026-10-29, job 98332).** With subsets of min(1000, n), `kid_std` is about 0 and `kid_mean` is noise at small n (Phase 5's findings). The pilot's 100 COCO prompts have the same problem, and PLAN.md's Phase 6 already says to skip KID at 200 prompts. The sweeps aren't affected: 2,000 COCO images give subsets of 1,000. Changing the metric is Dan's call. The options:
-  - (a) leave the code as it is, and read KID only from the sweeps;
+- **Resolved in Phase 6 (Dan, 2026-10-30): option (a).** **KID below 1,001 COCO images (found 2026-10-29, job 98332).** With subsets of min(1000, n), `kid_std` is about 0 and `kid_mean` is noise at small n (Phase 5's findings). The pilot's 100 COCO prompts have the same problem, and PLAN.md's Phase 6 already says to skip KID at 200 prompts. The sweeps aren't affected: 2,000 COCO images give subsets of 1,000. The options were:
+  - (a) leave the code as it is, and read KID only from the sweeps (chosen);
   - (b) have `evaluate_quality.py` skip KID below a minimum, as it does for FID, with a `kid_skipped` reason;
   - (c) use smaller subsets at small n, such as n/2, so `kid_std` means something.
 - **Resolved in Phase 5 (Dan, 2026-10-28): NFE has two columns, `nfe` and `nfe_full`.** The original issue: DeepCache's cached steps still call `unet.forward` and skip only the inner blocks, so a UNet forward hook alone counts the same NFE as the baseline. The proposed hook on `unet.mid_block` would have been wrong: DeepCache wraps the mid block too, so its hook fires on cached steps. Full passes are counted at `unet.mid_block.resnets[0]` (Phase 5's findings).

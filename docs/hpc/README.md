@@ -16,7 +16,7 @@ There are two clusters. They share storage (`/home`, `/data`, `/scratch`) but no
 
 | | coe-hpc1 (login node) | COE-HPC3 (head node g17 + compute nodes) |
 |---|---|---|
-| Used for | editing, git, pip, downloads, unit tests, checks of a few seconds | running every job, submitted with Slurm from g17 (`ssh coe-hpc3`) |
+| Used for | editing, git, pip, downloads, unit tests, checks of a few seconds | running every job, submitted with Slurm from g17 (`ssh coe-hpc3`; since 2026-11-01 that name doesn't resolve, so `ssh g17` from coe-hpc1) |
 | OS / glibc | CentOS 7 / 2.17 | Rocky 9 / 2.34 |
 | Internet | yes | **no**, on g17 and every node |
 | GPUs | none | 4× A100-40GB on each of cs001–cs004 (`--gres=gpu:a100:1`) |
@@ -51,15 +51,15 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 | 2 Offline assets | models, metric weights and datasets on shared storage | everything loads on HPC3 with the network blocked | **pass** (job 92251) |
 | 3 First GPU job (G1) | the pipeline makes images on an A100 | baseline, FP16, DPM-Solver++ and DeepCache make non-blank images; FP16 and DeepCache are faster | **pass** (job 98056) |
 | 4 Frozen prompts | the final prompt set, committed once | 2,000 COCO + 1,632 PartiPrompts; Challenge counts match | **pass** (no job; [data/prompts](../../data/prompts/README.md)) |
-| 5 Measurement | trustworthy numbers: TF32 off, NFE, stage timings, CLIP/KID/FID/LPIPS | every summary column filled; runs deterministic | **pass** (jobs 98329–98332), awaiting Dan's approval |
-| 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | not started |
+| 5 Measurement | trustworthy numbers: TF32 off, NFE, stage timings, CLIP/KID/FID/LPIPS | every summary column filled; runs deterministic | **pass** (jobs 98329–98332) |
+| 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | **pass** (jobs 100435–100548); sweep size to pick |
 | 7 Orchestration | one command runs an experiment file and resumes after failures | a cancelled task reruns alone | not started |
 | 8 Full sweeps (G3) | each optimization alone, on the full prompt set | team confirms the combined settings | not started |
 | 9 Combined + FID | combined runs, leave-one-out ablation, FID | final summaries for the report | not started |
 
-## Where we are (2026-10-29)
+## Where we are (2026-11-02)
 
-- **Branches:** Phases 0–2 are merged into `main` (PRs #1–#4). Phase 3 is on `hpc/p3-gpu`, branched from `main`; Phase 4 on `hpc/p4-prompts` and Phase 5 on `hpc/p5-measure`, each stacked on the one before. Phases 3–5 are waiting to be pushed and reviewed.
+- **Branches:** Phases 0–5 are merged into `main` (PRs #1–#7). Phase 6 is on `hpc/p6-pilot`, branched from `main`, waiting to be pushed and reviewed.
 - **Works now:**
   - the shared environment;
   - all models, metric weights and datasets, pinned and verified;
@@ -74,26 +74,44 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
     - CLIP Score with ViT-g/14 and ViT-L/14 per image, KID, FID from 5,000 images, LPIPS to the baseline;
     - `run_gpu.slurm`, `evaluate.slurm` and a `summary.csv` per result set;
     - runs are deterministic: two jobs on different GPUs made pixel-identical images;
-  - 116 unit tests, plus 3 `slow` ones run by hand.
-- **Watch out:** **GPU 0 on cs002 is broken**: every 1-GPU job that lands there fails with "busy or unavailable". Submit GPU jobs with `sbatch --exclude=cs002 …` until the admins fix it.
-- **Not done yet:**
-  - **Only debug numbers so far.** On 50 COCO prompts, the FP32 baseline (TF32 off) takes 5.77 s/image and scores a ViT-g CLIP Score of 30.81. The other configs have only P5.1's 2-image smoke numbers.
-  - **KID means nothing below 1,001 COCO images** (an open issue in PROGRESS.md for Dan to decide). The sweeps' 2,000 COCO images are fine.
+  - **the pilot (Phase 6, jobs 100435–100548):** 5 configs × 200 prompts, quality-scored, with a per-source table (`summarize.py --by source`). [report/pilot/](../../report/pilot/) has the tables;
+  - **the sweep's cost:** `scripts/estimate_sweep.py` models every sweep run's time from the pilot, exact UNet call counts included, and predicts the pilot's held-out runs within 0.2 %;
+  - each prompt's starting noise comes from its own CPU generator, drawn in float32, so a seed gives the same noise on any GPU and in FP16 and FP32 runs alike;
+  - 138 unit tests, plus 3 `slow` ones run by hand.
+- **Watch out:**
+  - **GPU 0 on cs002 is broken**: every 1-GPU job that lands there fails with "busy or unavailable". Submit GPU jobs with `sbatch --exclude=cs002 …` until the admins fix it.
+  - **CUDA can't use cs001's GPUs 1–3.** A job that gets one fails at model load; resubmit it. Only GPU 0 worked in Phase 6.
+- **Pilot results** (A100, FP32 with TF32 off, batch 1):
+
+  | Config | s/image | Speedup | Peak GB | CLIP ViT-g/14 | LPIPS to baseline |
+  |---|---|---|---|---|---|
+  | baseline (PNDM 50) | 5.775 | 1.00× | 4.76 | 30.46 | 0 |
+  | `ddim_20` | 2.340 | 2.47× | 4.76 | 30.47 | 0.346 |
+  | `dpmpp_20` | 2.344 | 2.46× | 4.76 | 30.57 | 0.255 |
+  | `deepcache_i3` | 2.357 | 2.45× | 4.97 | 30.56 | 0.259 |
+  | `fp16` | 1.468 | 3.93× | 2.61 | 30.45 | 0.012 |
+
+  The CLIP Scores are all within 0.12 of each other, which is noise at 200 prompts. KID is read only from the sweeps.
 
 ## Next steps
 
-1. **Dan approves the Phase 5 gate.** It passed: every `summary.csv` column is filled (except `fid`, skipped below 5,000 COCO images), the two debug runs are pixel-identical, and the stage times account for 99.3–99.8% of each batch's latency. [PROGRESS.md](PROGRESS.md#phase-5-measurement-correctness-r4-and-d3-2026-10-29) has the results.
-2. **Phase 6 (gate G2):** a pilot of 5 configs on `subsets/pilot.jsonl` (200 prompts): baseline, `ddim_20`, `dpmpp_20`, `deepcache_i3` and `fp16`. It reports seconds per image for each config and the GPU-hours a full sweep would take. Then the team picks the sweep size.
+1. **The team picks the sweep size (gate G2).** The sweep is the 17 runs of `00`–`04` plus a second-node baseline:
+
+   | Prompt set | GPU-hours | Wall time on 4 GPUs |
+   |---|---|---|
+   | all of `eval_prompts.jsonl` (3,632 prompts) | 65.5 | 16.4 h |
+   | `subsets/parti_550.jsonl` (2,550 prompts) | 46.0 | 11.5 h |
+
+   Phase 9's `05_combined` adds 4.1 or 2.9 GPU-hours. [PROGRESS.md](PROGRESS.md#phase-6-pilot-r5-and-d5-gate-g2-2026-10-30-to-2026-11-02) has the details.
+2. **Phase 7:** job arrays that resume after failures.
 
 **After that:**
-- **Phase 7:** job arrays that resume after failures.
 - **Phases 8–9:** the sweeps and the final runs.
 
 **Decisions the team still owes** (each one is recorded in PROGRESS.md when made):
 
 | When | Decision |
 |---|---|
-| Before Phase 6 | KID below 1,001 COCO images: leave it, skip it below a minimum, or use smaller subsets (PROGRESS.md's open issues) |
 | Gate G2 | Sweep size: all of `eval_prompts.jsonl`, or `subsets/parti_550.jsonl` (all 2,000 COCO + 550 stratified PartiPrompts) |
 | Gate G3 | The combined settings for `05_combined.yaml` |
 | Gate G4 | Whether to add 3,000 COCO prompts so FID can use 5,000 images |
