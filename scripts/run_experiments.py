@@ -29,11 +29,11 @@ from eldm.config import load_experiment
 DONE, TODO, CONFLICT = "done", "todo", "conflict"
 
 
-def run(cfg: dict) -> dict:
+def run(cfg: dict, stage_dir: str | None = None) -> dict:
     # eldm.benchmark imports torch and diffusers; --list runs on the head node without them.
     from eldm.benchmark import run as benchmark_run
 
-    return benchmark_run(cfg)
+    return benchmark_run(cfg, stage_dir=stage_dir)
 
 
 def run_state(cfg: dict) -> str:
@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--list", action="store_true",
                     help="Print each run's index, name and state (done, todo, conflict); exit 1 on a conflict")
     ap.add_argument("--skip-existing", action="store_true", help="Skip done runs; stop on a conflict")
+    ap.add_argument("--stage-dir", help="Write each run here first (job scripts pass the node-local "
+                    "SSD), then copy it to output_root with perf.json last")
     args = ap.parse_args(argv)
 
     runs = [cfg for path in args.experiments for cfg in load_experiment(path)]
@@ -113,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{cfg['name']}: done, skipped")
                 continue
 
-        perf = run(cfg)
+        perf = run(cfg, stage_dir=args.stage_dir)
         print(json.dumps({k: v for k, v in perf.items() if k != "env"}, indent=2))
     return 0
 

@@ -20,7 +20,7 @@ def runs(monkeypatch):
     """Replace benchmark.run with a recorder; the experiment files name paths from the repo root."""
     monkeypatch.chdir(ROOT)
     seen = []
-    monkeypatch.setattr(run_experiments, "run", lambda cfg: seen.append(cfg) or {"name": cfg["name"]})
+    monkeypatch.setattr(run_experiments, "run", lambda cfg, stage_dir=None: seen.append(cfg) or {"name": cfg["name"]})
     return seen
 
 
@@ -134,3 +134,11 @@ def test_list_does_not_import_torch(tmp_path):
     imported = {line.rsplit("|", 1)[-1].strip() for line in out.stderr.splitlines() if line.startswith("import time:")}
     assert "eldm.config" in imported and "torch" not in imported
     assert out.stdout.splitlines()[0] == "0\tbaseline\ttodo"
+
+
+def test_stage_dir_reaches_every_run(monkeypatch):
+    monkeypatch.chdir(ROOT)
+    calls = []
+    monkeypatch.setattr(run_experiments, "run", lambda cfg, stage_dir=None: calls.append((cfg["name"], stage_dir)) or {})
+    run_experiments.main(["configs/experiments/03_precision.yaml", "--stage-dir", "/tmp/eldm-1_2"])
+    assert calls == [("fp16", "/tmp/eldm-1_2"), ("fp16_bs4", "/tmp/eldm-1_2")]
