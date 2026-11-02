@@ -32,11 +32,12 @@ def _sync(device: str) -> None:
         torch.mps.synchronize()
 
 
-def _generate(pipe, cfg: dict[str, Any], batch: list[Prompt], device: str):
+def _generate(pipe, cfg: dict[str, Any], batch: list[Prompt]):
     # One generator per prompt so every image depends only on its own seed,
-    # regardless of batch size.
-    gen_device = "cpu" if device == "mps" else device
-    generators = [torch.Generator(gen_device).manual_seed(p.seed) for p in batch]
+    # regardless of batch size. On the CPU, as diffusers recommends for reproducibility:
+    # it draws the starting noise there and moves it to the pipeline's device, so a seed
+    # gives the same noise on any GPU model or on the CPU.
+    generators = [torch.Generator("cpu").manual_seed(p.seed) for p in batch]
     return pipe(
         prompt=[p.prompt for p in batch],
         num_inference_steps=cfg["num_inference_steps"],
@@ -114,7 +115,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
     probe, timer = PipelineProbe(pipe), StageTimer(pipe, device)
 
     for i in range(cfg["warmup_batches"]):
-        _generate(pipe, cfg, batches[i % len(batches)], device)
+        _generate(pipe, cfg, batches[i % len(batches)])
     _sync(device)
 
     if cuda:
@@ -130,7 +131,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
             timer.reset()
             _sync(device)
             t0 = time.perf_counter()
-            images = _generate(pipe, cfg, batch, device)
+            images = _generate(pipe, cfg, batch)
             _sync(device)
             dt = time.perf_counter() - t0
 

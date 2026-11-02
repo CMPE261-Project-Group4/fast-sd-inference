@@ -4,6 +4,7 @@ import json
 import time
 import weakref
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from eldm import benchmark, probes
 from eldm.config import deep_merge
 from eldm.pipeline import build_pipeline
 from eldm.probes import PipelineProbe, StageTimer
+from eldm.prompts import Prompt
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("check_run", ROOT / "scripts/check_run.py")
@@ -138,3 +140,17 @@ def test_run_releases_its_pipeline(tiny_cfg, monkeypatch, deepcache):
         assert built[0]() is None
     finally:
         gc.enable()
+
+
+def test_generators_are_per_prompt_and_on_the_cpu(tiny_cfg):
+    """diffusers recommends CPU generators for reproducibility: it draws the starting noise on the
+    CPU and moves it to the GPU, so a seed gives the same noise on any GPU model."""
+    calls = []
+
+    def pipe(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(images=[])
+
+    batch = [Prompt(0, "a red cube", "manual", "objects", 1000), Prompt(1, "a blue sphere", "manual", "objects", 1001)]
+    benchmark._generate(pipe, tiny_cfg, batch)
+    assert [(g.device.type, g.initial_seed()) for g in calls[0]["generator"]] == [("cpu", 1000), ("cpu", 1001)]
