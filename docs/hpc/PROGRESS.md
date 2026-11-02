@@ -16,7 +16,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 3 First GPU job (G1) | `hpc/p3-gpu` | 4 variants make images on an A100 | **pass** (2026-10-28, job 98056; job 97329 failed first on a broken GPU) |
 | 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | **pass** (2026-10-28; no job: built and checked on coe-hpc1) |
 | 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | **pass** (2026-10-29, jobs 98329–98332); approved by Dan (2026-10-30) |
-| 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | **pass** (2026-11-02, jobs 100435, 100436, 100547, 100548); Dan picks the sweep size |
+| 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | **pass** (2026-11-02, jobs 100435, 100436, 100547, 100548); the sweep runs on all 3,632 prompts (Dan, 2026-11-02) |
 | 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | not started |
 | 8 Sweeps (G3) | `hpc/p8-sweeps` | Dan confirms combined settings | not started |
 | 9 Combined + FID | `hpc/p9-combined` | final summaries | not started |
@@ -47,7 +47,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 
 ## Phase 6: Pilot, R5 and D5, gate G2 (2026-10-30 to 2026-11-02)
 
-### Gate G2: pass; Dan picks the sweep size
+### Gate G2: pass; the sweep runs on all 3,632 prompts
 
 The five pilot runs on `data/prompts/subsets/pilot.jsonl` (100 COCO + 100 PartiPrompts, the same prompts and seeds in every run) ran on cs001's GPU 0 with no other job on the node: job 100435 from commit 2ce96f7, except `fp16`, rerun by job 100547 from fe478dc after the noise fix below. Job 100548 scored all five, and `check_run.py --expect-quality` passes all five. Every `perf.json` has `git_dirty: false` and both TF32 flags off.
 
@@ -65,7 +65,7 @@ Stage coverage is 0.992–0.998. KID isn't reported from the pilot (decision bel
 
 | Prompt set | Sweep | Wall time on 4 GPUs | Phase 9's `05_combined`, separately |
 |---|---|---|---|
-| all of `eval_prompts.jsonl` (3,632) | **65.5 GPU-h** (62.8 generation + 2.7 evaluation) | 16.4 h | 4.1 GPU-h |
+| all of `eval_prompts.jsonl` (3,632), **chosen** | **65.5 GPU-h** (62.8 generation + 2.7 evaluation) | 16.4 h | 4.1 GPU-h |
 | `subsets/parti_550.jsonl` (2,550) | **46.0 GPU-h** (44.1 + 1.9) | 11.5 h | 2.9 GPU-h |
 
 - The cost model is fitted on `baseline`, `fp16` and `deepcache_i3`. It predicts the held-out `ddim_20` and `dpmpp_20` within +0.2 % and −0.0 %.
@@ -100,7 +100,8 @@ All five runs' ViT-g/14 CLIP Scores are within 0.12 of the baseline's. At 200 pr
 - `541ce83 fix(bench): free each run's pipeline before the next run starts`
 - `2ce96f7 feat(bench): draw each prompt's starting noise from a CPU generator`
 - `fe478dc fix(bench): draw the starting noise in float32 so fp16 starts where the baseline does`
-- `results: pilot summary and sweep estimate` (this commit): `report/pilot/`, this log, README.md and DEVELOPMENT.md.
+- `470a3f3 results: pilot summary and sweep estimate`: `report/pilot/`, this log, README.md and DEVELOPMENT.md.
+- `docs(hpc): record the sweep size chosen at gate G2` (this commit): this log, README.md and `data/prompts/README.md`.
 
 ### Findings
 
@@ -116,6 +117,7 @@ All five runs' ViT-g/14 CLIP Scores are within 0.12 of the baseline's. At 200 pr
 
 ### Decisions
 
+- **Sweep size: all of `eval_prompts.jsonl`, 3,632 prompts** (Dan, 2026-11-02, gate G2): 65.5 GPU-hours, about 16.4 h on 4 GPUs, against 46.0 GPU-hours and 11.5 h for `parti_550`. Per-Challenge tables get all 1,632 PartiPrompts instead of 550. `configs/base.yaml` already sets `prompts_file: data/prompts/eval_prompts.jsonl` and no file in `00`–`05` overrides it, so Phase 8 has nothing to change (correction 12).
 - **Phase 5 approved** (Dan merged PR #7, 2026-10-30).
 - **KID: option (a)** (Dan, 2026-10-30): the code stays as it is; KID is read only from the sweeps, and the pilot's tables leave it out.
 - **No new GitHub tooling** (Dan, 2026-10-30): no CI, PR template or branch-protection docs.
@@ -495,6 +497,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - ~~`#SBATCH --output` can't expand variables, so hard-code `/data/cmpe261-fa26/group4/011383814/fast-sd-inference/logs/%x-%j.out`.~~ Superseded by a4ffae1. Hard-coding Dan's clone sent teammates' jobs to his code and logs. Job scripts now use `--output=logs/%x-%j.out`, relative to the submit directory, and find their clone from `$SLURM_SUBMIT_DIR`. `logs/.gitkeep` is committed, so every clone has `logs/`.
     - `env/python` and `env/venv` in Phase 1 mean `/data/cmpe261-fa26/group4/env/{python,venv}`, not repo paths.
     - defq defaults to 1 GB per CPU, with at most 2 CPUs. `check_assets.sbatch` needs an explicit `--mem`, about 24G.
+12. **Phase 8's commit 1, `exp: set sweep prompt set from gate G2`, is skipped** (2026-11-02). Gate G2 chose the full set, which `configs/base.yaml` already uses, so there's no `prompts_file` to change.
 
 ## Decisions and versions
 
@@ -516,6 +519,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
   - Scripts: `prefetch_assets.py` and `fetch_datasets.sh` run on coe-hpc1; `check_assets.sbatch` is the HPC3 gate.
 - **Prompt set** (Phase 4): `data/prompts/eval_prompts.jsonl` and `subsets/`, built by `scripts/prepare_prompts.py` with `--sample-seed 0 --base-seed 1000`; see [data/prompts/README.md](../../data/prompts/README.md).
 - **Measurement** (Phase 5): TF32 off; NFE as `nfe` and `nfe_full`; stage times with CUDA events; CLIP Score by hand with ViT-g/14 (primary) and ViT-L/14; KID with subsets of min(1000, n); FID only from 5,000 COCO images. See Phase 5's decisions.
+- **Sweep prompt set** (gate G2, Dan, 2026-11-02): all of `eval_prompts.jsonl`, 3,632 prompts.
 - **Starting noise** (Phase 6): one CPU generator per prompt, seeded with the prompt's seed; the noise is drawn in float32 and passed as `latents`, cast to the run's dtype. Runs before fe478dc (Phases 3–5, and job 99828) used CUDA generators, so their images don't match later ones. See Phase 6.
 - **Versions are unchanged** despite the CLIPScore incompatibility (Dan, 2026-10-19). An adapter is used instead of `transformers<5`.
 - **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
