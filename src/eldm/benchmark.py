@@ -35,9 +35,14 @@ def _sync(device: str) -> None:
 def _generate(pipe, cfg: dict[str, Any], batch: list[Prompt]):
     # One generator per prompt so every image depends only on its own seed,
     # regardless of batch size. On the CPU, as diffusers recommends for reproducibility:
-    # it draws the starting noise there and moves it to the pipeline's device, so a seed
-    # gives the same noise on any GPU model or on the CPU.
+    # a seed gives the same noise on any GPU model or on the CPU.
     generators = [torch.Generator("cpu").manual_seed(p.seed) for p in batch]
+    # The starting noise is drawn in float32 and passed as `latents`, the way diffusers'
+    # maintainers advise for noise of your choosing (huggingface/diffusers#11056). Left to the
+    # pipeline, a CPU generator draws unrelated noise in float16, so fp16 runs started from other
+    # noise than the baseline (job 100435). In float32 it's the noise the pipeline itself draws.
+    shape = (1, pipe.unet.config.in_channels, cfg["height"] // pipe.vae_scale_factor, cfg["width"] // pipe.vae_scale_factor)
+    latents = torch.cat([torch.randn(shape, generator=g, dtype=torch.float32) for g in generators])
     return pipe(
         prompt=[p.prompt for p in batch],
         num_inference_steps=cfg["num_inference_steps"],
@@ -45,6 +50,7 @@ def _generate(pipe, cfg: dict[str, Any], batch: list[Prompt]):
         height=cfg["height"],
         width=cfg["width"],
         generator=generators,
+        latents=latents.to(pipe.device, pipe.unet.dtype),
     ).images
 
 

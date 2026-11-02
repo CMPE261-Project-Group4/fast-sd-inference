@@ -175,7 +175,9 @@ Add a new run by appending an entry to the relevant `runs:` list — only list t
 
 1. Same prompts file, same per-prompt seeds, same resolution (512×512) and guidance scale (7.5) everywhere.
    Each prompt gets its own seeded `torch.Generator` on the CPU, as [diffusers recommends](https://huggingface.co/docs/diffusers/en/using-diffusers/reusing_seeds):
-   a seed gives the same starting noise on any GPU model, a laptop or the CPU tests.
+   a seed gives the same starting noise on any GPU model, a laptop or the CPU tests. The noise is
+   drawn in float32 and passed to the pipeline as `latents`, so FP16 runs start from the same noise
+   as FP32 ones ([diffusers#11056](https://github.com/huggingface/diffusers/issues/11056)).
 2. Report perf numbers only from GPU runs on one hardware type; record the GPU name (saved in `perf.json`).
 3. Warm-up iterations are excluded from timing; CUDA is synchronized before every timer read.
 4. Never edit `results/` by hand. Re-run instead.

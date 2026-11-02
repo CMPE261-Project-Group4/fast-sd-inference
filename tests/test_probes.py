@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
+from diffusers.utils.torch_utils import randn_tensor
 
 from eldm import benchmark, probes
 from eldm.config import deep_merge
@@ -142,15 +144,33 @@ def test_run_releases_its_pipeline(tiny_cfg, monkeypatch, deepcache):
         gc.enable()
 
 
-def test_generators_are_per_prompt_and_on_the_cpu(tiny_cfg):
-    """diffusers recommends CPU generators for reproducibility: it draws the starting noise on the
-    CPU and moves it to the GPU, so a seed gives the same noise on any GPU model."""
-    calls = []
+class FakePipe:
+    """Records the pipeline call; has what _generate reads to shape the starting noise."""
 
-    def pipe(**kwargs):
-        calls.append(kwargs)
+    vae_scale_factor = 8
+    device = torch.device("cpu")
+
+    def __init__(self, dtype) -> None:
+        self.unet = SimpleNamespace(config=SimpleNamespace(in_channels=4), dtype=dtype)
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
         return SimpleNamespace(images=[])
 
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_starting_noise_is_per_prompt_and_drawn_in_float32_on_the_cpu(tiny_cfg, dtype):
+    """Each prompt's noise comes from its own CPU generator (diffusers recommends the CPU for
+    reproducibility) and is drawn in float32 whatever the pipeline's dtype: drawn in float16 it's
+    unrelated noise, and job 100435's fp16 run scored LPIPS 0.76 against the baseline. In float32
+    it's exactly the noise diffusers itself draws, so the fp32 runs didn't change."""
+    pipe = FakePipe(dtype)
     batch = [Prompt(0, "a red cube", "manual", "objects", 1000), Prompt(1, "a blue sphere", "manual", "objects", 1001)]
     benchmark._generate(pipe, tiny_cfg, batch)
-    assert [(g.device.type, g.initial_seed()) for g in calls[0]["generator"]] == [("cpu", 1000), ("cpu", 1001)]
+    [call] = pipe.calls
+    assert [(g.device.type, g.initial_seed()) for g in call["generator"]] == [("cpu", 1000), ("cpu", 1001)]
+    diffusers_fp32 = randn_tensor((2, 4, 4, 4), generator=[torch.Generator("cpu").manual_seed(s) for s in (1000, 1001)],
+                                  device=torch.device("cpu"), dtype=torch.float32)  # tiny_cfg is 32x32
+    assert call["latents"].dtype == dtype
+    assert torch.equal(call["latents"], diffusers_fp32.to(dtype))
