@@ -129,8 +129,10 @@ python scripts/run_experiments.py configs/experiments/01_steps.yaml --num-prompt
 
 `--num-prompts` is for quick checks; omit it for real runs. Use `--only <run_name>` to rerun a single run.
 
-On HPC: see [docs/hpc/DEVELOPMENT.md](docs/hpc/DEVELOPMENT.md#3-running-jobs). Experiments run as GPU jobs
-with `scripts/hpc/run_gpu.slurm`, reworked for the cluster in Phase 3; its first real runs come in Phase 5.
+On HPC: see [docs/hpc/DEVELOPMENT.md](docs/hpc/DEVELOPMENT.md#3-running-jobs). `scripts/hpc/submit_experiment.sh`
+runs one or more experiment files as a Slurm job array, one run per task, then evaluates them; run the
+same command again to resume, and only unfinished runs rerun. `scripts/hpc/run_gpu.slurm` runs a few
+runs in one job.
 
 ### 3. Evaluate quality (Dan)
 

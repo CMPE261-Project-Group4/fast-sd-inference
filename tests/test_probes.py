@@ -1,6 +1,7 @@
 import gc
 import importlib.util
 import json
+import shutil
 import time
 import weakref
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import yaml
 from diffusers.utils.torch_utils import randn_tensor
 
 from eldm import benchmark, probes
@@ -174,3 +176,35 @@ def test_starting_noise_is_per_prompt_and_drawn_in_float32_on_the_cpu(tiny_cfg, 
                                   device=torch.device("cpu"), dtype=torch.float32)  # tiny_cfg is 32x32
     assert call["latents"].dtype == dtype
     assert torch.equal(call["latents"], diffusers_fp32.to(dtype))
+
+
+def test_staged_run_is_published_whole(tiny_cfg, tmp_path):
+    stage, out = tmp_path / "stage", Path(tiny_cfg["output_root"]) / "tiny"
+    # A finished run being replaced: its quality files score the old images.
+    out.mkdir(parents=True)
+    for name in ("perf.json", "quality.json", "quality_per_image.csv"):
+        (out / name).write_text("old")
+    perf = benchmark.run(tiny_cfg, stage_dir=stage)
+    assert sorted(p.name for p in out.iterdir()) == ["config.yaml", "images", "perf.json", "timings.jsonl"]
+    assert sorted(p.name for p in (out / "images").iterdir()) == ["0000.png", "0001.png"]
+    assert json.loads((out / "perf.json").read_text())["num_images"] == perf["num_images"] == 2
+    assert yaml.safe_load((out / "config.yaml").read_text()) == tiny_cfg  # no stage path in it
+    assert len((out / "timings.jsonl").read_text().splitlines()) == 2
+    assert list(stage.iterdir()) == []  # the staged copy is gone
+    assert check_run.check_run(out) == []
+
+
+def test_staged_run_copied_partway_has_no_perf_json(tiny_cfg, tmp_path, monkeypatch):
+    """A job killed while copying must leave a run that --skip-existing redoes."""
+    copy2 = shutil.copy2
+
+    def failing_copy2(src, dst, **kwargs):
+        if Path(src).name == "timings.jsonl":
+            raise OSError("No space left on device")
+        return copy2(src, dst, **kwargs)
+
+    monkeypatch.setattr(benchmark.shutil, "copy2", failing_copy2)
+    with pytest.raises(OSError):
+        benchmark.run(tiny_cfg, stage_dir=tmp_path / "stage")
+    out = Path(tiny_cfg["output_root"]) / "tiny"
+    assert (out / "images" / "0000.png").exists() and not (out / "perf.json").exists()

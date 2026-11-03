@@ -77,17 +77,35 @@ Experiments run with `scripts/hpc/run_gpu.slurm <experiment.yaml> [args]`: one A
 sbatch --exclude=cs002 --time=00:30:00 scripts/hpc/run_gpu.slurm configs/experiments/00_baseline.yaml \
     --prompts-file data/prompts/subsets/debug.jsonl --output-root /scratch/cmpe261-fa26/group4/results/p5/debug_a
 ```
-That job (98330) took 10 minutes: 50 images at batch 1 and 50 at batch 4, FP32 with TF32 off. The pilot, `configs/experiments/pilot.yaml` (5 runs × 200 images), took 50 minutes (job 100435); `--only <run>` reruns one run. For a sweep, `scripts/estimate_sweep.py` gives each run's time (PROGRESS.md, Phase 6).
+Each run is written to the node's SSD (the prelude's `$STAGE`) and copied to `--output-root` when it ends, `perf.json` last, so a run directory with a `perf.json` is complete. That job (98330) took 10 minutes: 50 images at batch 1 and 50 at batch 4, FP32 with TF32 off. The pilot, `configs/experiments/pilot.yaml` (5 runs × 200 images), took 50 minutes (job 100435); `--only <run>` reruns one run. For a sweep, `scripts/estimate_sweep.py` gives each run's time (PROGRESS.md, Phase 6).
 
 Quality is evaluated by a second GPU job, `scripts/hpc/evaluate.slurm <results_dir> <baseline_run_dir>`: CLIP Score, KID, LPIPS against the baseline (and FID from 5,000 COCO images) for every run under `<results_dir>`, then `check_run.py --expect-quality` and `summarize.py` into `<results_dir>/summary/`. One A100, 30 minutes by default; 4 runs of 50 images took 73 s (job 98332), the pilot's 5 runs of 200 about 2.5 minutes (job 100436). To start it when the runs succeed, submit it with `--dependency=afterok:<jobid>:<jobid>`.
 
 **Add `--exclude=cs002` to every GPU job** until the admins fix its GPU 0 (§7).
 
+### Whole experiment files: `submit_experiment.sh`
+
+For more than a few runs, `scripts/hpc/submit_experiment.sh` submits a **job array**, one run per task (`scripts/hpc/run_array.sbatch`), and an evaluation that starts when every task has succeeded. It isn't a job itself: run it on g17 from your clone's root, and it submits the jobs and returns. Check with `--dry-run` first; it lists the runs and prints the `sbatch` commands without submitting anything, and it works on coe-hpc1 too:
+```bash
+scripts/hpc/submit_experiment.sh --dry-run --output-root /scratch/cmpe261-fa26/group4/results/p7/check \
+    --time 00:10:00 configs/experiments/pilot.yaml -- --num-prompts 4
+```
+Then the same command without `--dry-run` submits it.
+
+- **Arguments.** `--output-root` and `--time` are required. `--time` is each task's limit, so give the longest run's time with headroom: `report/pilot/sweep_estimate.csv` has each run's. Several experiment files make one array. Arguments after `--` go to `run_experiments.py`.
+- **What it submits.** The array holds only the runs that aren't done (`run_experiments.py --list`), with at most `--max-parallel` (4) running at once. The evaluation is `evaluate.slurm <output-root> <baseline>`; the baseline defaults to `<output-root>/baseline`. `--eval-time` sets its limit, 30 minutes by default.
+- **Excluded nodes.** `--exclude` defaults to `cs001,cs002`, whose GPUs fail (§7). That leaves cs003 and cs004, 8 A100s on 2 nodes, which is also gpuqs's limit per user.
+- **Refusals.** It stops if the clone has uncommitted changes, since every run records its commit, or if jobs for the same output root are already queued.
+- **Logs.** `logs/eldm-<output-root's name>-<array>_<index>.out` for each task, and `logs/eldm-eval-<name>-<jobid>.out`.
+- **How long.** Submitted, the command above (4 prompts per run) took about a minute: 4 tasks ran at once on cs003, each 18–61 s, mostly startup (array 100683). Its evaluation took 43 s (job 100684). Each task's `perf.json` names the task's own job ID; `sacct -j <array> -o JobID,JobIDRaw` maps them.
+
+**To resume after a failed, timed-out or cancelled task, run the same command again.** Finished runs are skipped, so only the missing ones run, and the evaluation is chained to them. With every run done, only the evaluation is submitted. A task that Slurm requeues after a node failure also skips its run if it finished. To cancel one task: `scancel <array>_<index>`. Slurm then cancels the evaluation too (`--kill-on-invalid-dep`). Phase 7 checked this: a baseline cancelled at image 7 of 16 left nothing in the output root, and the same command again reran only it (arrays 100689 and 100695).
+
 Limits to know (measured; re-check with `sinfo` and `scontrol show partition <name>`):
 
 | Partition | Time limit | Nodes | Notes |
 |---|---|---|---|
-| `gpuqs` | 2 days | cs001–cs004 (4× A100 each), plus P100 and H100 nodes | QOS `gpu3nodes`: at most **2 nodes per user** |
+| `gpuqs` | 2 days | cs001–cs004 (4× A100 each), plus P100 and H100 nodes | QOS `gpu3nodes`: at most **2 nodes per user**. It counts nodes, not jobs: 4 of our 1-GPU jobs ran on cs003 at once (Phase 7) |
 | `defq` | 6 h | CPU nodes | at most **2 CPUs per node**; 1 GB per CPU unless you pass `--mem` |
 
 Record every job that backs a gate or a result in the jobs table in [PROGRESS.md](PROGRESS.md).
@@ -209,11 +227,12 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `scripts/check_run.py` | checks run directories: images present, decodable and not blank; `perf.json` complete (NFE, stage times, env, TF32 as configured); `timings.jsonl` one row per batch, stage coverage 0.90–1.01; with `--expect-quality`, the quality files. `--compare A B`: B reproduces A (Phase 5's determinism gate) |
 | `src/eldm/probes.py` | hooks inside a pipeline call: `PipelineProbe` counts UNet calls (`nfe`, `nfe_full`), `StageTimer` times the text encoder, UNet loop and VAE decode with CUDA events |
 | `src/eldm/metrics.py` | CLIP Score by hand (ViT-g/14, ViT-L/14), KID and FID (`InceptionMetrics`, reference features reused), per-image LPIPS |
-| `scripts/run_experiments.py` | runs an experiment file's runs; `--only`, `--prompts-file`, `--num-prompts`, `--output-root` |
+| `scripts/run_experiments.py` | runs one or more experiment files' runs; `--only`, `--prompts-file`, `--num-prompts`, `--output-root`; `--list` (each run's index, name and state: done, todo or conflict), `--index` and `--skip-existing` for job arrays; `--stage-dir` writes each run there first |
 | `scripts/evaluate_quality.py`, `scripts/hpc/evaluate.slurm` | quality metrics per run: `quality.json` (means, KID, FID or why skipped) and `quality_per_image.csv`; the job also checks and summarizes |
 | `scripts/summarize.py` | one row per run into `summary.csv` (`--csv`), speedups against `--baseline`, plots and an image grid (`--grid-runs`, `--grid-ids`); `--by source\|category\|challenge` adds per-group quality tables, `--omit` drops columns |
 | `scripts/estimate_sweep.py` | a sweep's GPU-hours from the pilot's timings: exact UNet call counts per run, a cost model checked on held-out pilot runs, totals per prompt set |
-| `scripts/hpc/run_gpu.slurm` | runs an experiment file on one A100. Its first real use is Phase 5. |
+| `scripts/hpc/run_gpu.slurm` | runs an experiment file's runs one after another in one job, on one A100 |
+| `scripts/hpc/submit_experiment.sh`, `run_array.sbatch` | runs experiment files as a job array, one run per task, and chains `evaluate.slurm`; rerun it to resume (§3) |
 | `data/prompts/eval_prompts.jsonl`, `data/prompts/subsets/` | the frozen prompt set and its subsets; never edit by hand ([data/prompts/README.md](../../data/prompts/README.md)) |
 | `scripts/prepare_prompts.py` | rebuilds the frozen prompt files from the shared datasets (about 3 s on coe-hpc1) |
 
@@ -228,12 +247,16 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | The job landed on a P100 or an H100 | a plain `--gres=gpu:1` | `--gres=gpu:a100:1` |
 | `CUDA error: CUDA-capable device(s) is/are busy or unavailable` on an idle GPU | a broken GPU: GPU 0 on cs002 since at least 2026-10-27 (job 98023). Slurm hands out the lowest free index, so 1-GPU jobs on an otherwise idle cs002 always get it | resubmit with `sbatch --exclude=cs002 …`. On another node, run `scripts/hpc/gpu_diagnose.sbatch` with `--nodelist=<node>` to confirm, then exclude that node and tell the HPC admins the node, GPU index and UUID |
 | A CUDA `RuntimeError` such as `No CUDA GPUs are available` at model load, while the job log's `nvidia-smi` lists the GPU | CUDA can't use the allocated GPU: cs001's GPUs 1–3, whose utilization reads `[N/A]` (found by job 99031 on 2026-10-31; when it started isn't known). `run_gpu.slurm` and `evaluate.slurm` pass `--device cuda` for this reason: under the configs' `auto`, job 99031 ran on the CPU at 108 s/image, and its `perf.json` says `"device": "cpu"` | the same as the row above: `gpu_diagnose.sbatch --nodelist=<node>`, then exclude the node and tell the HPC admins |
-| A job stays pending with reason `DependencyNeverSatisfied` | the job it waits on with `afterok` failed, timed out or was cancelled, so it will never start (jobs 99032 and 99034, after 99031) | `scancel <jobid>`; fix the first job, then submit both again |
+| A job stays pending with reason `DependencyNeverSatisfied` | the job it waits on with `afterok` failed, timed out or was cancelled, so it will never start (jobs 99032 and 99034, after 99031) | `scancel <jobid>`; fix the first job, then submit both again. `submit_experiment.sh` passes `--kill-on-invalid-dep=yes`, so Slurm cancels its evaluation instead |
+| The evaluation from `submit_experiment.sh` shows CANCELLED in `sacct`, unstarted | a task of its array failed, timed out or was cancelled | read that task's log; once it's fixed, run the same `submit_experiment.sh` command again: only the unfinished runs rerun |
+| Array tasks stay pending with reason `QOSMaxNodePerUserLimit` | gpuqs's QOS `gpu3nodes` lets each user's jobs use at most 2 nodes at once | nothing: they start when your jobs on other nodes end |
+| `run_experiments.py` or `submit_experiment.sh` reports a `conflict` | the output root holds a finished run of that name with another config, for example another `--num-prompts` or `--device` | use the arguments that made it, or a new `--output-root`; results with different configs never share a directory |
 | `Requested node configuration is not available` | more than 2 CPUs on `defq` | use `-c 2`, or `cpuqs` |
 | `check_env` fails "venv matches requirements.lock" | someone ran pip in the shared venv | when no jobs run, rerun `scripts/hpc/setup_env.sh`, which rebuilds the venv |
 | `'BaseModelOutputWithPooling' object has no attribute 'norm'` | torchmetrics CLIPScore with transformers 5 ([Lightning-AI/torchmetrics#3407](https://github.com/Lightning-AI/torchmetrics/issues/3407): fixed on torchmetrics' master in July 2026, not in a release as of 1.9.0) | don't use CLIPScore yet: `eldm.metrics.ClipScorer` computes CLIP Score by hand, with the same formula and the same `pooler_output` unwrap as the fix (Phase 5). Once a torchmetrics release has the fix, move ViT-L/14 to CLIPScore, the method diffusers documents; ViT-g/14 stays on open_clip, since its weights exist only in open_clip's format. `check_assets.py` keeps the `CLIPTensorFeatures` adapter for its own check |
 | `check_run` says stage coverage is outside (0.9, 1.01) | the three stage times don't add up to the batch's end-to-end time: something else in the pipeline call took over 10% (a slow image save doesn't count; it's outside the timer) | look at that batch in `timings.jsonl`; on a very fast config, the PIL conversion's share can grow, so report it before changing the bound |
 | Timings vary between runs | shared nodes: other jobs use the CPUs; GPUs aren't isolated | set thread counts; repeat runs; compare runs on the same node |
 | `check_run.py` takes minutes on coe-hpc1 | it reads every image, and files not yet cached come over shared storage: 200 PNGs took 160 s cold, at 5 % of a CPU, and 1.5 s cached | it's waiting on storage, not loading the node; for large result sets use the check inside `evaluate.slurm` |
+| A run directory or file a job just wrote is "No such file" on coe-hpc1 | coe-hpc1's NFS client cached the failed lookup from before the job wrote it (Phase 7) | wait a few seconds and look again; `submit_experiment.sh` reads run states on g17 |
 | `/home` quota or "No space left" errors | caches went to `~/.cache` | `source env/site.sh` before running anything |
 | Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache"; in `evaluate.slurm`, "The given NumPy array is not writable" (`eldm.metrics.load_image` only reads it) and "Metric `Kernel Inception Distance` will save all extracted features in buffer" | nothing to do |

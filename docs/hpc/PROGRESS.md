@@ -17,7 +17,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 4 Frozen prompts | `hpc/p4-prompts` | counts match the data doc | **pass** (2026-10-28; no job: built and checked on coe-hpc1) |
 | 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | **pass** (2026-10-29, jobs 98329–98332); approved by Dan (2026-10-30) |
 | 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | **pass** (2026-11-02, jobs 100435, 100436, 100547, 100548); the sweep runs on all 3,632 prompts (Dan, 2026-11-02) |
-| 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | not started |
+| 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | **pass** (2026-11-02, arrays 100683, 100689 and 100695; evaluations 100684 and 100696) |
 | 8 Sweeps (G3) | `hpc/p8-sweeps` | Dan confirms combined settings | not started |
 | 9 Combined + FID | `hpc/p9-combined` | final summaries | not started |
 
@@ -44,6 +44,77 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-11-02 | 100436 | P6.3 `evaluate.slurm p6/pilot p6/pilot/baseline`, after `afterok:100435` (20 min) | cs001, GPU 0 | COMPLETED 0:0 in 2m30s, MaxRSS 6.1 GB; `check_run.py --expect-quality` passes all 5; fp16's LPIPS to the baseline 0.76 showed the noise problem |
 | 2026-11-02 | 100547 | P6.2b: `run_gpu.slurm pilot.yaml --only fp16` into `p6/pilot` (15 min), from fe478dc; job 100435's fp16 moved to `p6/fp16_job100435` | cs001, GPU 0 | COMPLETED 0:0 in 5m26s, MaxRSS 2.8 GB; 1.468 s/image (1.453 in 100435), 2.61 GB peak. Alone on the node |
 | 2026-11-02 | 100548 | P6.3b `evaluate.slurm p6/pilot p6/pilot/baseline`, after `afterok:100547` (15 min) | cs001, GPU 0 | COMPLETED 0:0 in 2m17s, MaxRSS 2.0 GB; all 5 pass, fp16's LPIPS to the baseline 0.012; **gate G2's numbers** |
+| 2026-11-02 | 100683 | P7.1 `submit_experiment.sh … pilot.yaml -- --num-prompts 4` into `p7/check`: array `0-4%4` of `run_array.sbatch` (1× A100, 8 CPUs, 32G, 10 min each), from 0294c1b | cs003, GPUs 0–3 | 5 tasks COMPLETED 0:0 in 18–61 s, MaxRSS 1.7 GB; tasks 0–3 (jobs 100685–100688) ran at once, task 4 (job 100683) waited for the cap (`JobArrayTaskLimit`). The cancel meant for task 4 came after it ended |
+| 2026-11-02 | 100684 | P7.2 its evaluation: `evaluate.slurm p7/check p7/check/baseline`, `afterok:100683`, `--kill-on-invalid-dep=yes` (15 min) | cs003, GPU 0 | COMPLETED 0:0 in 43 s, MaxRSS 6.1 GB; started as the last task ended; `check_run.py --expect-quality` passes all 5 |
+| 2026-11-02 | 100689 | P7.3 the same with `--num-prompts 16` into `p7/resume`, array `0-4%4` | cs003, GPUs 0–3 | Tasks 1–4 (jobs 100692–100694, 100689) COMPLETED 0:0 in 35–52 s. Dan cancelled task 0, the baseline (job 100691), after 1m05s at image 7 of 16; nothing of it reached `/scratch` |
+| 2026-11-02 | 100690 | P7.4 its evaluation | none | CANCELLED by Slurm before starting: `DependencyNeverSatisfied`, `afterok:100689_*(failed)` |
+| 2026-11-02 | 100695 | P7.5 the same `submit_experiment.sh` command again: it listed 4 runs done and the baseline todo, and submitted array `0%4` | cs003, GPU 0 | COMPLETED 0:0 in 1m52s, MaxRSS 1.7 GB; only the baseline ran, alone on the node: 5.677 s/image |
+| 2026-11-02 | 100696 | P7.6 its evaluation, `afterok:100695` | cs003, GPU 0 | COMPLETED 0:0 in 38 s, MaxRSS 1.9 GB; `check_run.py --expect-quality` passes all 5; **Phase 7 gate passed** |
+
+## Phase 7: Orchestration, R6 (2026-11-02)
+
+### Gate: pass (arrays 100683, 100689 and 100695; evaluations 100684 and 100696)
+
+One command runs whole experiment files and resumes after a failure:
+
+```bash
+scripts/hpc/submit_experiment.sh --output-root <dir> --time <each run's limit> <experiment.yaml>... [-- <run_experiments.py arguments>]
+```
+
+It submits the runs that aren't done as one Slurm job array (`run_array.sbatch`, one run per task, at most 4 at once), then an evaluation (`evaluate.slurm`) that starts only if every task succeeds. Run again, it submits only the unfinished runs. Both checks ran `pilot.yaml`'s 5 runs on cs003, from 0294c1b with a clean tree; Dan submitted them.
+
+1. **One command** (`p7/check`, 4 prompts per run). Array 100683 ran tasks 0–3 at once on GPUs 0–3. Task 4 waited for the cap (`JobArrayTaskLimit`) and started when task 1 ended. Evaluation 100684 started as the last task ended, and `check_run.py --expect-quality` passed all 5. This didn't test resuming: the cancel meant for task 4 came after its 18-second run had ended.
+2. **Resume** (`p7/resume`, 16 prompts per run). Dan cancelled array 100689's task 0, the baseline, at image 7 of 16. Nothing of it reached `/scratch`: the output root held only the 4 finished runs. Slurm cancelled evaluation 100690 before it started (`DependencyNeverSatisfied`, `afterok:100689_*(failed)`). The same command again listed the baseline as `todo` and the rest as `done`, and submitted only index 0 (array 100695) and evaluation 100696, which passed all 5. The 4 untouched runs' `perf.json` still name array 100689's tasks (jobs 100692–100694 and 100689); the baseline names job 100695.
+
+Phase 7's jobs used 0.18 GPU-hours of 2.3 requested. Results are locked with `chmod -R a-w` in `/scratch/cmpe261-fa26/group4/results/p7/` (`check`, `resume`; 44 MB).
+
+### Commits
+
+- `eab4bb1 feat(runner): add --list, --index and --skip-existing`: `run_experiments.py` takes several experiment files as one list of runs. A run is `done` (its `perf.json` exists and its `config.yaml` equals the run's config), `todo`, or `conflict` (finished with another config: always an error, so results from different configs never mix). `--list` doesn't import torch, so it runs on g17's head node.
+- `a14dd9e feat(runner): stage each run on the node-local SSD`: with `--stage-dir`, a run is written to the job's `$STAGE` and copied to its output directory when it ends, `perf.json` last (as `perf.json.tmp`, then `os.replace`). Stale quality files are removed first. `run_gpu.slurm` uses it too.
+- `0294c1b feat(hpc): job arrays with a chained evaluation`: `run_array.sbatch` and `submit_experiment.sh`, tested through `--dry-run`; README.md and DEVELOPMENT.md (§3, §6, §7).
+- `docs(hpc): Phase 7 results` (this commit): this log, README.md and DEVELOPMENT.md.
+
+### Findings
+
+- **4 of our jobs run at once on one node.** Array 100683's 4 running tasks all landed on cs003 while cs004 sat idle, and the 5th waited only for our own cap. So the QOS's `MaxTRESPerUser=node=2` counts nodes, not jobs, and the sweep runs 4 at a time: 65.5 GPU-hours is about 16.4 h, not 33.
+- **Neighbours didn't slow runs down; the node did.** Seconds per image (speedup over the same set's baseline):
+
+  | Run | Phase 6 pilot: cs001 GPU 0, alone, 200 images | `p7/check`: cs003, 4 at once, 4 images | `p7/resume`: cs003, 16 images |
+  |---|---|---|---|
+  | baseline | 5.775 | 5.616 | 5.677 (alone on the node) |
+  | `ddim_20` | 2.340 (2.47×) | 2.262 (2.48×) | 2.273 (2.50×) |
+  | `dpmpp_20` | 2.344 (2.46×) | 2.296 (2.45×) | 2.304 (2.46×) |
+  | `deepcache_i3` | 2.357 (2.45×) | 2.306 (2.44×) | 2.316 (2.45×) |
+  | `fp16` | 1.468 (3.93×) | 1.412 (3.98×) | 1.424 (3.99×) |
+
+  The baseline beside 3 other runs (5.616 s) was no slower than alone (5.677 s). But every run is 1.7–3.0 % faster on cs003 than on cs001's GPU 0 (`p7/resume` against the pilot), so speedups within cs003 match the pilot's within 1.3 %. Few images, but all five runs agree.
+- **Each task spends 12–38 s outside generating:** imports, loading the model, the warm-up and the copy to `/scratch` (fp16 with 4 prompts: 18 s in all, 6 s generating). Fine for the sweep's runs of 1–6 h.
+- **`perf.json` records each task's own job ID** (`SLURM_JOB_ID`), not the array's. Array 100683's tasks 0–3 are jobs 100685–100688, and the last task gets the array's own ID, 100683. `sacct -j <array> -o JobID,JobIDRaw` shows both.
+- **coe-hpc1 can see a new run a few seconds late.** Just after job 100696 ended, opening `p7/resume/baseline/perf.json` on coe-hpc1 said "No such file", and `ls` a moment later showed it: NFS had cached the failed lookup from before the run existed. `submit_experiment.sh` and the tasks read run states on HPC3, not here.
+- **Not checked:** whether the prelude's `EXIT` trap removed the cancelled task's stage directory from cs003's `/tmp`; looking would take a job on cs003. A leftover can't collide with a rerun, whose stage directory has its own job ID in its name.
+
+### Decisions
+
+- **Slurm's own job arrays and dependencies, no workflow manager** (plan approved by Dan, 2026-11-02): nothing is added to the frozen venv.
+- **A run is finished when its `perf.json` exists**, written last, and its `config.yaml` equals the run's config. A finished run with another config stops the submission.
+- **One array per output root.** Phase 8 submits `00`–`04` together: one cap of 4 GPUs, one output root and one evaluation.
+- **`--exclude=cs001,cs002` by default,** until the admins fix those GPUs (open issues).
+
+### Phase 8 preview (dry run on coe-hpc1, 2026-11-02)
+
+```bash
+scripts/hpc/submit_experiment.sh --dry-run --output-root /scratch/cmpe261-fa26/group4/results/p8/sweep --time 07:00:00 \
+    configs/experiments/00_baseline.yaml configs/experiments/01_steps.yaml configs/experiments/02_schedulers.yaml \
+    configs/experiments/03_precision.yaml configs/experiments/04_deepcache.yaml
+```
+
+It lists 17 runs, all `todo`, and would submit one array, `--array=0-16%4`, and the evaluation with `p8/sweep/baseline`. Two limits are Phase 8's to set: `--time` must cover the longest run, the baseline at about 5.9 h (`report/pilot/sweep_estimate.csv`); and `--eval-time` must cover scoring all 17 runs in one job, about 2.6 h at Phase 6's 0.15 s per image, against the default 30 minutes.
+
+### Noted for Phase 8 (questions for Dan; nothing changed)
+
+- **Where a run lands moves its time by 2–3 %** (findings), about the size of some differences the sweep measures. The plan's second-node baseline measures it, and the summary's `node` column records it. Options: let runs spread over cs003 and cs004, and compare each to a baseline from its own node; or keep the whole sweep on one node.
+- **`01_steps`' `steps_20` and `02_schedulers`' `pndm_20` are the same config** (PNDM, 20 steps, FP32). Running both costs about 2.7 GPU-hours; the pair could also measure timing noise.
 
 ## Phase 6: Pilot, R5 and D5, gate G2 (2026-10-30 to 2026-11-02)
 
@@ -101,7 +172,8 @@ All five runs' ViT-g/14 CLIP Scores are within 0.12 of the baseline's. At 200 pr
 - `2ce96f7 feat(bench): draw each prompt's starting noise from a CPU generator`
 - `fe478dc fix(bench): draw the starting noise in float32 so fp16 starts where the baseline does`
 - `470a3f3 results: pilot summary and sweep estimate`: `report/pilot/`, this log, README.md and DEVELOPMENT.md.
-- `docs(hpc): record the sweep size chosen at gate G2` (this commit): this log, README.md and `data/prompts/README.md`.
+- `77d29df docs(hpc): record the sweep size chosen at gate G2`: this log, README.md and `data/prompts/README.md`.
+- `cd1e96e chore(git): merge main into hpc/p6-pilot`: PR #8 merged at 470a3f3, before 77d29df was pushed; no files changed. 77d29df reached `main` through PR #9.
 
 ### Findings
 
@@ -498,6 +570,12 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - `env/python` and `env/venv` in Phase 1 mean `/data/cmpe261-fa26/group4/env/{python,venv}`, not repo paths.
     - defq defaults to 1 GB per CPU, with at most 2 CPUs. `check_assets.sbatch` needs an explicit `--mem`, about 24G.
 12. **Phase 8's commit 1, `exp: set sweep prompt set from gate G2`, is skipped** (2026-11-02). Gate G2 chose the full set, which `configs/base.yaml` already uses, so there's no `prompts_file` to change.
+13. **Phase 7, as done** (2026-11-02).
+    - Commit 1 doesn't add `--prompts-file`: it has existed since Phase 5.
+    - Commit 2 stages the whole run (images, `config.yaml`, `timings.jsonl`, `perf.json`), not only the images, so `perf.json` is copied last and marks a finished run.
+    - "Evaluate and summarize jobs" are one job: `evaluate.slurm` already summarizes.
+    - The check ran `pilot.yaml`'s 5 runs instead of "2 runs × 4 prompts", so 5 tasks with a cap of 4 also tested the cap. With 4 prompts a task lasted 18–61 s, too short to cancel by hand, so the cancel was redone in a second output root with 16 prompts.
+    - PROGRESS.md is updated by the last commit, `docs(hpc): Phase 7 results`, not by commit 3.
 
 ## Decisions and versions
 
@@ -521,6 +599,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
 - **Measurement** (Phase 5): TF32 off; NFE as `nfe` and `nfe_full`; stage times with CUDA events; CLIP Score by hand with ViT-g/14 (primary) and ViT-L/14; KID with subsets of min(1000, n); FID only from 5,000 COCO images. See Phase 5's decisions.
 - **Sweep prompt set** (gate G2, Dan, 2026-11-02): all of `eval_prompts.jsonl`, 3,632 prompts.
 - **Starting noise** (Phase 6): one CPU generator per prompt, seeded with the prompt's seed; the noise is drawn in float32 and passed as `latents`, cast to the run's dtype. Runs before fe478dc (Phases 3–5, and job 99828) used CUDA generators, so their images don't match later ones. See Phase 6.
+- **Orchestration** (Phase 7): `submit_experiment.sh` submits experiment files as one Slurm job array of the unfinished runs, at most 4 at once, excluding cs001 and cs002, with the evaluation chained by `afterok` and `--kill-on-invalid-dep=yes`. A run is finished when its `perf.json` exists and its `config.yaml` matches; runs are staged on the node's SSD and copied with `perf.json` last.
 - **Versions are unchanged** despite the CLIPScore incompatibility (Dan, 2026-10-19). An adapter is used instead of `transformers<5`.
 - **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
 

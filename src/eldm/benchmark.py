@@ -6,6 +6,7 @@ import gc
 import json
 import os
 import platform
+import shutil
 import socket
 import statistics
 import subprocess
@@ -23,6 +24,8 @@ from .prompts import Prompt, load_prompts
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE_KEYS = ("t_text_s", "t_unet_s", "t_vae_s")
+# Written into a run directory by evaluate_quality.py, from the images there.
+QUALITY_FILES = ("quality.json", "quality_per_image.csv")
 
 
 def _sync(device: str) -> None:
@@ -104,11 +107,34 @@ def _per_call(counts: list[int]) -> int | float:
     return counts[0] if len(set(counts)) == 1 else statistics.mean(counts)
 
 
-def run(cfg: dict[str, Any]) -> dict[str, Any]:
+def _publish(work_dir: Path, out_dir: Path) -> None:
+    """Copy a staged run to its output directory with perf.json last, so a run directory with a
+    perf.json is complete (run_experiments.py --skip-existing relies on it); then remove the
+    staged copy."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # A run being replaced: its perf.json would claim the new run is complete before it is,
+    # and its quality files score the old images.
+    for name in ("perf.json", *QUALITY_FILES):
+        (out_dir / name).unlink(missing_ok=True)
+    shutil.copytree(work_dir / "images", out_dir / "images", dirs_exist_ok=True)
+    for name in ("config.yaml", "timings.jsonl"):
+        shutil.copy2(work_dir / name, out_dir / name)
+    shutil.copy2(work_dir / "perf.json", out_dir / "perf.json.tmp")
+    os.replace(out_dir / "perf.json.tmp", out_dir / "perf.json")  # atomic within a directory
+    shutil.rmtree(work_dir)
+
+
+def run(cfg: dict[str, Any], stage_dir: str | Path | None = None) -> dict[str, Any]:
+    """Generate and time one run into <output_root>/<name>/. With ``stage_dir`` (job scripts
+    pass the node-local SSD), the run is written to <stage_dir>/<name>/ first and copied to
+    output_root at the end, so PNG saves don't go to NFS. Saves aren't timed either way."""
     out_dir = Path(cfg["output_root"]) / cfg["name"]
-    img_dir = out_dir / "images"
+    work_dir = Path(stage_dir) / cfg["name"] if stage_dir else out_dir
+    if stage_dir:
+        shutil.rmtree(work_dir, ignore_errors=True)  # left by a killed attempt of this job
+    img_dir = work_dir / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / "config.yaml", "w") as f:
+    with open(work_dir / "config.yaml", "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
 
     prompts = load_prompts(cfg["prompts_file"], cfg.get("num_prompts"))
@@ -129,7 +155,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
         model_mem = torch.cuda.memory_allocated()
 
     records, n_images = [], 0
-    with open(out_dir / "timings.jsonl", "w") as log:
+    with open(work_dir / "timings.jsonl", "w") as log:
         for batch in tqdm(batches, desc=cfg["name"]):
             if cuda:
                 torch.cuda.reset_peak_memory_stats()
@@ -177,7 +203,7 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
         perf["peak_mem_gb"] = max(r["peak_mem_bytes"] for r in records) / 1024**3
     perf["env"] = env
 
-    with open(out_dir / "perf.json", "w") as f:
+    with open(work_dir / "perf.json", "w") as f:
         json.dump(perf, f, indent=2)
 
     probe.remove()
@@ -191,4 +217,6 @@ def run(cfg: dict[str, Any]) -> dict[str, Any]:
     gc.collect()
     if cuda:
         torch.cuda.empty_cache()
+    if stage_dir:
+        _publish(work_dir, out_dir)
     return perf
