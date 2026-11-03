@@ -53,13 +53,13 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 | 4 Frozen prompts | the final prompt set, committed once | 2,000 COCO + 1,632 PartiPrompts; Challenge counts match | **pass** (no job; [data/prompts](../../data/prompts/README.md)) |
 | 5 Measurement | trustworthy numbers: TF32 off, NFE, stage timings, CLIP/KID/FID/LPIPS | every summary column filled; runs deterministic | **pass** (jobs 98329–98332) |
 | 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | **pass** (jobs 100435–100548); the sweep runs on all 3,632 prompts |
-| 7 Orchestration | one command runs an experiment file and resumes after failures | a cancelled task reruns alone | not started |
+| 7 Orchestration | one command runs an experiment file and resumes after failures | a cancelled task reruns alone | **pass** (arrays 100683, 100689, 100695) |
 | 8 Full sweeps (G3) | each optimization alone, on the full prompt set | team confirms the combined settings | not started |
 | 9 Combined + FID | combined runs, leave-one-out ablation, FID | final summaries for the report | not started |
 
 ## Where we are (2026-11-02)
 
-- **Branches:** Phases 0–5 are merged into `main` (PRs #1–#7). Phase 6 is on `hpc/p6-pilot`, branched from `main`, waiting to be pushed and reviewed.
+- **Branches:** Phases 0–6 are merged into `main` (PRs #1–#9). Phase 7 is on `hpc/p7-orchestration`, branched from `hpc/p6-pilot` as PR #9 merged it, waiting to be pushed and reviewed.
 - **Sweep size (gate G2, Dan, 2026-11-02):** all 3,632 prompts of `eval_prompts.jsonl`, the default in `configs/base.yaml`.
 - **Works now:**
   - the shared environment;
@@ -78,10 +78,12 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
   - **the pilot (Phase 6, jobs 100435–100548):** 5 configs × 200 prompts, quality-scored, with a per-source table (`summarize.py --by source`). [report/pilot/](../../report/pilot/) has the tables;
   - **the sweep's cost:** `scripts/estimate_sweep.py` models every sweep run's time from the pilot, exact UNet call counts included, and predicts the pilot's held-out runs within 0.2 %;
   - each prompt's starting noise comes from its own CPU generator, drawn in float32, so a seed gives the same noise on any GPU and in FP16 and FP32 runs alike;
-  - 138 unit tests, plus 3 `slow` ones run by hand.
+  - **one command per sweep (Phase 7, arrays 100683–100695):** `scripts/hpc/submit_experiment.sh` runs experiment files as a Slurm job array, 4 runs at once, and chains the evaluation. Run again after a failed or cancelled task, it redoes only the unfinished runs. Runs are staged on the node's SSD, so a run on `/scratch` with a `perf.json` is complete. See [DEVELOPMENT.md §3](DEVELOPMENT.md#3-running-jobs);
+  - 155 unit tests, plus 3 `slow` ones run by hand.
 - **Watch out:**
   - **GPU 0 on cs002 is broken**: every 1-GPU job that lands there fails with "busy or unavailable". Submit GPU jobs with `sbatch --exclude=cs002 …` until the admins fix it.
-  - **CUDA can't use cs001's GPUs 1–3.** A job that gets one fails at model load; resubmit it. Only GPU 0 worked in Phase 6.
+  - **CUDA can't use cs001's GPUs 1–3.** A job that gets one fails at model load; resubmit it. Only GPU 0 worked in Phase 6. `submit_experiment.sh` excludes cs001 and cs002 by default.
+  - **Nodes differ by a few percent:** the same runs were 1.7–3.0 % faster on cs003 than on cs001's GPU 0 (Phase 7). Compare timings from the same node.
 - **Pilot results** (A100, FP32 with TF32 off, batch 1):
 
   | Config | s/image | Speedup | Peak GB | CLIP ViT-g/14 | LPIPS to baseline |
@@ -96,8 +98,7 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 
 ## Next steps
 
-1. **Phase 7:** job arrays that resume after failures.
-2. **Phase 8:** the sweep on all 3,632 prompts: the 17 runs of `00`–`04` plus a second-node baseline, about 65.5 GPU-hours, or 16.4 h on 4 GPUs. [PROGRESS.md](PROGRESS.md#phase-6-pilot-r5-and-d5-gate-g2-2026-10-30-to-2026-11-02) has the estimate.
+1. **Phase 8:** the sweep on all 3,632 prompts: the 17 runs of `00`–`04` as one array from `submit_experiment.sh`, plus a second-node baseline, about 65.5 GPU-hours, or 16.4 h on 4 GPUs. [PROGRESS.md](PROGRESS.md#phase-6-pilot-r5-and-d5-gate-g2-2026-10-30-to-2026-11-02) has the estimate, and [Phase 7's preview](PROGRESS.md#phase-8-preview-dry-run-on-coe-hpc1-2026-11-02) the dry run and the limits to set. Before submitting, Dan decides how to handle node speed and the duplicate `steps_20`/`pndm_20` run ([noted for Phase 8](PROGRESS.md#noted-for-phase-8-questions-for-dan-nothing-changed)).
 
 **After that:**
 - **Phase 9:** the combined runs (`05_combined` adds about 4.1 GPU-hours) and the final summaries.

@@ -97,14 +97,15 @@ Then the same command without `--dry-run` submits it.
 - **Excluded nodes.** `--exclude` defaults to `cs001,cs002`, whose GPUs fail (§7). That leaves cs003 and cs004, 8 A100s on 2 nodes, which is also gpuqs's limit per user.
 - **Refusals.** It stops if the clone has uncommitted changes, since every run records its commit, or if jobs for the same output root are already queued.
 - **Logs.** `logs/eldm-<output-root's name>-<array>_<index>.out` for each task, and `logs/eldm-eval-<name>-<jobid>.out`.
+- **How long.** Submitted, the command above (4 prompts per run) took about a minute: 4 tasks ran at once on cs003, each 18–61 s, mostly startup (array 100683). Its evaluation took 43 s (job 100684). Each task's `perf.json` names the task's own job ID; `sacct -j <array> -o JobID,JobIDRaw` maps them.
 
-**To resume after a failed, timed-out or cancelled task, run the same command again.** Finished runs are skipped, so only the missing ones run, and the evaluation is chained to them. With every run done, only the evaluation is submitted. A task that Slurm requeues after a node failure also skips its run if it finished. To cancel one task: `scancel <array>_<index>`. Slurm then cancels the evaluation too (`--kill-on-invalid-dep`).
+**To resume after a failed, timed-out or cancelled task, run the same command again.** Finished runs are skipped, so only the missing ones run, and the evaluation is chained to them. With every run done, only the evaluation is submitted. A task that Slurm requeues after a node failure also skips its run if it finished. To cancel one task: `scancel <array>_<index>`. Slurm then cancels the evaluation too (`--kill-on-invalid-dep`). Phase 7 checked this: a baseline cancelled at image 7 of 16 left nothing in the output root, and the same command again reran only it (arrays 100689 and 100695).
 
 Limits to know (measured; re-check with `sinfo` and `scontrol show partition <name>`):
 
 | Partition | Time limit | Nodes | Notes |
 |---|---|---|---|
-| `gpuqs` | 2 days | cs001–cs004 (4× A100 each), plus P100 and H100 nodes | QOS `gpu3nodes`: at most **2 nodes per user** |
+| `gpuqs` | 2 days | cs001–cs004 (4× A100 each), plus P100 and H100 nodes | QOS `gpu3nodes`: at most **2 nodes per user**. It counts nodes, not jobs: 4 of our 1-GPU jobs ran on cs003 at once (Phase 7) |
 | `defq` | 6 h | CPU nodes | at most **2 CPUs per node**; 1 GB per CPU unless you pass `--mem` |
 
 Record every job that backs a gate or a result in the jobs table in [PROGRESS.md](PROGRESS.md).
@@ -256,5 +257,6 @@ If you use an AI coding assistant, give it [PLAN.md](PLAN.md) and [PROGRESS.md](
 | `check_run` says stage coverage is outside (0.9, 1.01) | the three stage times don't add up to the batch's end-to-end time: something else in the pipeline call took over 10% (a slow image save doesn't count; it's outside the timer) | look at that batch in `timings.jsonl`; on a very fast config, the PIL conversion's share can grow, so report it before changing the bound |
 | Timings vary between runs | shared nodes: other jobs use the CPUs; GPUs aren't isolated | set thread counts; repeat runs; compare runs on the same node |
 | `check_run.py` takes minutes on coe-hpc1 | it reads every image, and files not yet cached come over shared storage: 200 PNGs took 160 s cold, at 5 % of a CPU, and 1.5 s cached | it's waiting on storage, not loading the node; for large result sets use the check inside `evaluate.slurm` |
+| A run directory or file a job just wrote is "No such file" on coe-hpc1 | coe-hpc1's NFS client cached the failed lookup from before the job wrote it (Phase 7) | wait a few seconds and look again; `submit_experiment.sh` reads run states on g17 |
 | `/home` quota or "No space left" errors | caches went to `~/.cache` | `source env/site.sh` before running anything |
 | Harmless warnings | "NVIDIA driver too old (10010)" on coe-hpc1; "unauthenticated requests to the HF Hub"; "Couldn't connect to the Hub … offline mode is enabled" followed by "Will try to load from local cache"; in `evaluate.slurm`, "The given NumPy array is not writable" (`eldm.metrics.load_image` only reads it) and "Metric `Kernel Inception Distance` will save all extracted features in buffer" | nothing to do |
