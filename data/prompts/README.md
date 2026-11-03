@@ -9,7 +9,7 @@ Every run uses these files: the same prompts, ids and seeds in every config, so 
 | `eval_prompts.jsonl` | 3,632 | ids 0–1999: COCO captions; ids 2000–3631: all of PartiPrompts | the full sweeps; `configs/base.yaml` points here |
 | `subsets/debug.jsonl` | 50 | ids 0–49 (COCO) | debug runs and Phase 5's determinism check |
 | `subsets/pilot.jsonl` | 200 | COCO ids 0–99 + 100 PartiPrompts, stratified by Challenge | the Phase 6 pilot (gate G2) |
-| `subsets/parti_550.jsonl` | 2,550 | all 2,000 COCO + 550 PartiPrompts, stratified by Challenge | the sweeps, if gate G2 picks the smaller set |
+| `subsets/parti_550.jsonl` | 2,550 | all 2,000 COCO + 550 PartiPrompts, stratified by Challenge | the sweeps' smaller option; gate G2 chose the full set instead (2026-11-02) |
 | `manual_prompts.yaml` | 25 | hand-written smoke-test prompts; **not** part of the evaluation | `scripts/hpc/gpu_check.py` |
 
 The subsets are rows of `eval_prompts.jsonl`, unchanged, so a prompt has the same id and seed everywhere, and `debug` ⊂ `pilot` ⊂ `parti_550`. To run on a subset, set `prompts_file: data/prompts/subsets/<name>.jsonl` in the experiment file.

@@ -52,7 +52,7 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 | 3 First GPU job (G1) | the pipeline makes images on an A100 | baseline, FP16, DPM-Solver++ and DeepCache make non-blank images; FP16 and DeepCache are faster | **pass** (job 98056) |
 | 4 Frozen prompts | the final prompt set, committed once | 2,000 COCO + 1,632 PartiPrompts; Challenge counts match | **pass** (no job; [data/prompts](../../data/prompts/README.md)) |
 | 5 Measurement | trustworthy numbers: TF32 off, NFE, stage timings, CLIP/KID/FID/LPIPS | every summary column filled; runs deterministic | **pass** (jobs 98329–98332) |
-| 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | **pass** (jobs 100435–100548); sweep size to pick |
+| 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | **pass** (jobs 100435–100548); the sweep runs on all 3,632 prompts |
 | 7 Orchestration | one command runs an experiment file and resumes after failures | a cancelled task reruns alone | not started |
 | 8 Full sweeps (G3) | each optimization alone, on the full prompt set | team confirms the combined settings | not started |
 | 9 Combined + FID | combined runs, leave-one-out ablation, FID | final summaries for the report | not started |
@@ -60,6 +60,7 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 ## Where we are (2026-11-02)
 
 - **Branches:** Phases 0–5 are merged into `main` (PRs #1–#7). Phase 6 is on `hpc/p6-pilot`, branched from `main`, waiting to be pushed and reviewed.
+- **Sweep size (gate G2, Dan, 2026-11-02):** all 3,632 prompts of `eval_prompts.jsonl`, the default in `configs/base.yaml`.
 - **Works now:**
   - the shared environment;
   - all models, metric weights and datasets, pinned and verified;
@@ -95,23 +96,15 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 
 ## Next steps
 
-1. **The team picks the sweep size (gate G2).** The sweep is the 17 runs of `00`–`04` plus a second-node baseline:
-
-   | Prompt set | GPU-hours | Wall time on 4 GPUs |
-   |---|---|---|
-   | all of `eval_prompts.jsonl` (3,632 prompts) | 65.5 | 16.4 h |
-   | `subsets/parti_550.jsonl` (2,550 prompts) | 46.0 | 11.5 h |
-
-   Phase 9's `05_combined` adds 4.1 or 2.9 GPU-hours. [PROGRESS.md](PROGRESS.md#phase-6-pilot-r5-and-d5-gate-g2-2026-10-30-to-2026-11-02) has the details.
-2. **Phase 7:** job arrays that resume after failures.
+1. **Phase 7:** job arrays that resume after failures.
+2. **Phase 8:** the sweep on all 3,632 prompts: the 17 runs of `00`–`04` plus a second-node baseline, about 65.5 GPU-hours, or 16.4 h on 4 GPUs. [PROGRESS.md](PROGRESS.md#phase-6-pilot-r5-and-d5-gate-g2-2026-10-30-to-2026-11-02) has the estimate.
 
 **After that:**
-- **Phases 8–9:** the sweeps and the final runs.
+- **Phase 9:** the combined runs (`05_combined` adds about 4.1 GPU-hours) and the final summaries.
 
 **Decisions the team still owes** (each one is recorded in PROGRESS.md when made):
 
 | When | Decision |
 |---|---|
-| Gate G2 | Sweep size: all of `eval_prompts.jsonl`, or `subsets/parti_550.jsonl` (all 2,000 COCO + 550 stratified PartiPrompts) |
 | Gate G3 | The combined settings for `05_combined.yaml` |
 | Gate G4 | Whether to add 3,000 COCO prompts so FID can use 5,000 images |
