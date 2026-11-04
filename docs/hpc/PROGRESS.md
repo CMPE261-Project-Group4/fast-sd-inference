@@ -18,7 +18,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | **pass** (2026-10-29, jobs 98329–98332); approved by Dan (2026-10-30) |
 | 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | **pass** (2026-11-02, jobs 100435, 100436, 100547, 100548); the sweep runs on all 3,632 prompts (Dan, 2026-11-02) |
 | 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | **pass** (2026-11-02, arrays 100683, 100689 and 100695; evaluations 100684 and 100696) |
-| 8 Sweeps (G3) | `hpc/p8-sweeps` | Dan confirms combined settings | not started |
+| 8 Sweeps (G3) | `hpc/p8-sweeps` | Dan confirms combined settings | **runs done** (2026-11-04, arrays 101761 and 101767; evaluations 101762 and 101768); gate G3 waits on the team |
 | 9 Combined + FID | `hpc/p9-combined` | final summaries | not started |
 
 ## Jobs
@@ -50,6 +50,100 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-11-02 | 100690 | P7.4 its evaluation | none | CANCELLED by Slurm before starting: `DependencyNeverSatisfied`, `afterok:100689_*(failed)` |
 | 2026-11-02 | 100695 | P7.5 the same `submit_experiment.sh` command again: it listed 4 runs done and the baseline todo, and submitted array `0%4` | cs003, GPU 0 | COMPLETED 0:0 in 1m52s, MaxRSS 1.7 GB; only the baseline ran, alone on the node: 5.677 s/image |
 | 2026-11-02 | 100696 | P7.6 its evaluation, `afterok:100695` | cs003, GPU 0 | COMPLETED 0:0 in 38 s, MaxRSS 1.9 GB; `check_run.py --expect-quality` passes all 5; **Phase 7 gate passed** |
+| 2026-11-03 | 101761 | P8.1 the sweep: `submit_experiment.sh` on `00`–`04` into `p8/sweep`, array `0-16%4` of `run_array.sbatch` (1× A100, 8 CPUs, 32G, 7 h each, `--exclude=cs001,cs002,cs003`), from 28b8378 | cs004, GPUs 0–3 | 17 tasks COMPLETED 0:0 in 1h06m–5h59m (jobs 101761 and 101763–104914), MaxRSS 1.6–2.7 GB; 3,632 images per run, 18:14 to 09:43. From 00:13 to 03:16 only 3 tasks ran: another user's 1-GPU job (101938, seen at 01:46) held the fourth GPU |
+| 2026-11-04 | 101762 | P8.2 its evaluation: `evaluate.slurm p8/sweep p8/sweep/baseline`, `afterok:101761`, `--kill-on-invalid-dep=yes` (3.5 h) | cs004 | COMPLETED 0:0 in 1h50m45s, MaxRSS 6.1 GB; `check_run.py --expect-quality` passes all 17; `p8/sweep/summary/` written |
+| 2026-11-03 | 101767 | P8.3 the second-node baseline: `submit_experiment.sh … 00_baseline.yaml -- --only baseline` into `p8/baseline_node2`, array `0%4` (7 h, `--exclude=cs001,cs002,cs004`), from 28b8378 | cs003, GPU 2 | COMPLETED 0:0 in 5h59m48s, MaxRSS 1.8 GB; 5.842 s/image against the sweep baseline's 5.816 on cs004, and every image byte-identical to it. Another user's 2 A100 jobs shared the node |
+| 2026-11-04 | 101768 | P8.4 its evaluation, `afterok:101767` (30 min) | cs003 | COMPLETED 0:0 in 7m42s, MaxRSS 2.1 GB; `check_run.py --expect-quality` passes |
+
+## Phase 8: Full sweeps, R7 and D6 (2026-11-03 to 2026-11-04)
+
+### Gate G3: waiting on the team
+
+The sweep is done and checked: each optimization alone, on all 3,632 prompts, on one node. Gate G3 is the team's choice of combined settings for `configs/experiments/05_combined.yaml`. What the sweep says about the settings there now, FP16 + DPM-Solver++ 2M at 20 steps + DeepCache interval 3:
+
+- **Each keeps quality on its own.** Against the baseline's ViT-g/14 CLIP Score, FP16 changes it by −0.01, DPM-Solver++ 20 by +0.13 and DeepCache interval 3 by +0.07. No 95 % interval falls below zero.
+- **The alternatives:**
+  - DeepCache interval 5 is 1.35× faster than interval 3, with no overall CLIP loss (−0.04, interval −0.15 to +0.07). But its images move further from the baseline's (LPIPS 0.33 against 0.25), and its Writing & Symbols prompts lose 1.38 points (91 prompts).
+  - DDIM and Euler at 20 steps take the same time as DPM-Solver++. DDIM has the lower KID (3.75 against 5.05 × 10⁻³) and the smaller CLIP gain (+0.05, interval −0.05 to +0.16).
+  - Fewer steps were tested only with PNDM: 10 steps lose 2.37 points. DPM-Solver++ below 20 steps wasn't tested.
+- Whichever is chosen, Phase 9's leave-one-out runs measure how the three combine.
+
+### The sweep (array 101761, evaluation 101762) and the second-node baseline (array 101767, evaluation 101768)
+
+Dan submitted both on 2026-11-03 from 28b8378 with a clean tree. Every `perf.json` has `git_dirty: false`, commit 28b8378 and both TF32 flags off.
+
+```bash
+scripts/hpc/submit_experiment.sh --output-root /scratch/cmpe261-fa26/group4/results/p8/sweep --time 07:00:00 --eval-time 03:30:00 --exclude cs001,cs002,cs003 configs/experiments/00_baseline.yaml configs/experiments/01_steps.yaml configs/experiments/02_schedulers.yaml configs/experiments/03_precision.yaml configs/experiments/04_deepcache.yaml
+scripts/hpc/submit_experiment.sh --output-root /scratch/cmpe261-fa26/group4/results/p8/baseline_node2 --time 07:00:00 --exclude cs001,cs002,cs004 configs/experiments/00_baseline.yaml -- --only baseline
+```
+
+All 17 sweep runs ran on cs004, 4 at a time, and `check_run.py --expect-quality` passes all of them. Generation took 15.5 h (18:14 to 09:43) and the evaluation 1.8 h. Phase 8 used 64.3 GPU-hours, against 65.5 estimated.
+
+**Results** (`report/sweeps/summary.csv`; A100, TF32 off). ΔCLIP is the mean per-prompt change against the baseline's ViT-g/14 CLIP Score (30.06; ViT-L/14 26.78), with a paired 95 % interval (normal approximation, from each run's `quality_per_image.csv`). KID is against 2,000 COCO images, × 10⁻³, lower is better; its ± is the spread over 100 subsets of 1,000, not an interval of the mean.
+
+| Run | s/image | Speedup | Peak GB | `nfe` (`nfe_full`) | ΔCLIP ViT-g/14 [95 % CI] | ΔCLIP ViT-L/14 | KID × 10⁻³ | LPIPS to baseline |
+|---|---|---|---|---|---|---|---|---|
+| baseline: PNDM 50, FP32 | 5.816 | 1.00× | 4.76 | 51 (51) | 0 (30.06) | 0 (26.78) | 4.25 ± 0.37 | 0 |
+| `baseline_bs4` | 4.827 | 1.20× | 8.77 | 51 (51) | −0.00 [−0.00, +0.00] | −0.00 | 4.25 ± 0.37 | 0.000005 |
+| `steps_10`: PNDM | 1.329 | 4.38× | 4.76 | 11 (11) | **−2.37** [−2.53, −2.21] | −0.86 | 5.20 ± 0.33 | 0.481 |
+| `steps_20` = `pndm_20` | 2.448 | 2.38× | 4.76 | 21 (21) | **−0.31** [−0.42, −0.21] | −0.10 | 3.62 ± 0.32 | 0.300 |
+| `steps_30` | 3.526 | 1.65× | 4.76 | 31 (31) | **−0.10** [−0.19, −0.01] | −0.04 | 3.99 ± 0.33 | 0.242 |
+| `ddim_20` | 2.339 | 2.49× | 4.76 | 20 (20) | +0.05 [−0.05, +0.16] | +0.09 | 3.75 ± 0.35 | 0.336 |
+| `dpmpp_20`: DPM-Solver++ 2M | 2.343 | 2.48× | 4.76 | 20 (20) | +0.13 [+0.04, +0.22] | +0.04 | 5.05 ± 0.35 | 0.254 |
+| `euler_20` | 2.342 | 2.48× | 4.76 | 20 (20) | +0.11 [+0.02, +0.21] | +0.11 | 5.08 ± 0.38 | 0.313 |
+| `ddim_50` | 5.685 | 1.02× | 4.76 | 50 (50) | +0.09 [+0.01, +0.16] | +0.07 | 4.20 ± 0.38 | 0.168 |
+| `dpmpp_50` | 5.620 | 1.03× | 4.76 | 50 (50) | +0.09 [+0.01, +0.17] | −0.02 | 4.95 ± 0.37 | 0.203 |
+| `euler_50` | 5.720 | 1.02× | 4.76 | 50 (50) | +0.09 [+0.01, +0.18] | +0.04 | 4.81 ± 0.37 | 0.226 |
+| `fp16` | 1.442 | 4.03× | 2.61 | 51 (51) | −0.01 [−0.04, +0.01] | +0.01 | 4.31 ± 0.38 | 0.016 |
+| `fp16_bs4` | 0.999 | 5.82× | 4.02 | 51 (51) | −0.00 [−0.03, +0.02] | −0.00 | 4.27 ± 0.37 | 0.015 |
+| `deepcache_i2` | 3.135 | 1.86× | 4.97 | 51 (25) | +0.18 [+0.09, +0.27] | +0.12 | 3.71 ± 0.38 | 0.232 |
+| `deepcache_i3` | 2.359 | 2.47× | 4.97 | 51 (17) | +0.07 [−0.03, +0.16] | +0.08 | 3.61 ± 0.38 | 0.255 |
+| `deepcache_i5` | 1.748 | 3.33× | 4.97 | 51 (11) | −0.04 [−0.15, +0.07] | +0.06 | 3.51 ± 0.36 | 0.329 |
+
+Stage coverage is 0.992–0.999. `steps_20` and `pndm_20` are the same config and made byte-identical images, so they share a row; they ran at 2.448 and 2.447 s/image.
+
+### Findings
+
+- **Fewer PNDM steps cost quality; a better scheduler doesn't.** PNDM loses 2.37 points at 10 steps, 0.31 at 20 and 0.10 at 30, every interval below zero. At 20 steps, DDIM, DPM-Solver++ and Euler keep or slightly raise the CLIP Score, at 2.34 s/image against PNDM's 2.45 (PNDM's extra warm-up call). So at 20 steps the scheduler decides the quality, not the step count.
+- **At 50 steps the schedulers don't converge to the baseline's images.** DDIM, DPM-Solver++ and Euler all score +0.09, with LPIPS 0.17–0.23 against PNDM 50: each converges to its own, slightly different images.
+- **FP16 changes nothing measurable:** ΔCLIP −0.01 (interval −0.04 to +0.01), LPIPS 0.016, KID within 0.06 × 10⁻³. It is 4.03× faster with 45 % less peak memory.
+- **Batching helps FP16 more than FP32.** Batch 4 is 1.44× faster per image in FP16 (1.442 to 0.999 s) but 1.20× in FP32 (5.816 to 4.827 s), with the same images (LPIPS 0.015 and 0.000005, as Phase 5 found for FP32). The estimate had assumed FP32's ratio for `fp16_bs4`, so it predicted 1.230 s.
+- **DeepCache holds its CLIP Score up to interval 5** (+0.18, +0.07, −0.04 at intervals 2, 3 and 5), while its images drift from the baseline's (LPIPS 0.23, 0.25, 0.33). A cached call still costs 9 % of a full one: interval 5 runs 11 full and 40 cached calls in 1.748 s.
+- **KID ranks the runs differently from CLIP.** DDIM 20, DeepCache and PNDM 20 have lower KID than the baseline (3.5–3.8 against 4.25 × 10⁻³); DPM-Solver++ and Euler higher (4.8–5.1), at both 20 and 50 steps. The gaps are 1.4–2.2 times the subset spread. Read them with care: KID uses only the 2,000 COCO prompts, with 2,000 reference images.
+- **Per-Challenge** (`report/sweeps/summary_by_challenge.csv`, PartiPrompts only; COCO prompts are `(none)`): 10 PNDM steps hurt every Challenge, most of all Properties & Positioning (−4.42, 35 prompts), Writing & Symbols (−4.36, 91) and Complex (−3.50, 113); least, Linguistic Structures (−0.92, 61). Writing & Symbols is also where DeepCache interval 5 loses most (−1.38). Groups are small, and these have no intervals yet.
+- **COCO and PartiPrompts agree** (`summary_by_source.csv`): every run's ΔCLIP is within 0.09 between the two sources, except `steps_30` (−0.16 on COCO, −0.03 on PartiPrompts).
+- **The baseline matches DeepCache's published 50-step PLMS CLIP Scores** (ViT-g/14): 30.33 on our 2,000 COCO prompts and 29.73 on all 1,632 PartiPrompts, against the paper's 30.30 and 29.51.
+- **Timing repeats across nodes and runs.** The second-node baseline ran at 5.842 s/image on cs003 against 5.816 on cs004 (+0.4 %, smaller than the 1.7–3.0 % Phase 7 saw against cs001), and made byte-identical images: 3,632 of 3,632 (`filecmp`, 15 s on coe-hpc1). `steps_20` and `pndm_20`, two tasks on different GPUs of cs004, are also byte-identical and 0.04 % apart.
+- **The cost model held.** Every run is within 1.8 % of its Phase 6 estimate (`report/pilot/sweep_estimate.csv`), 14 of 16 within 1.0 %, except `fp16_bs4` (above). The estimates were measured on cs001, the slower node. Evaluation took 0.108 s per image, against 0.15 estimated.
+- **Keeping the sweep on one node cost one GPU for about 3 hours.** From 00:13 to 03:16 another user's 1-GPU job held one of cs004's GPUs, so only 3 tasks ran. `sacct` doesn't show other users' jobs here; the prelude's node listing in each task's log does.
+- **`summarize.py`'s quality-vs-latency plot overlaps labels** where runs sit close together (the 20- and 50-step groups). The report's figures are made off-cluster.
+
+### Decisions
+
+- **The whole sweep on one node** (Dan, 2026-11-03, as submitted): cs004, with `--exclude=cs001,cs002,cs003`, so no speedup mixes nodes; the second-node baseline on cs003 measures the node effect.
+- **`steps_20` and `pndm_20` both run** (Dan, 2026-11-03): their match measures run-to-run timing on one node.
+- **Limits:** 7 h per task (the baseline took 5h59m) and 3.5 h for the evaluation (it took 1h51m).
+
+### Commits
+
+- `results: sweep summaries and per-Challenge tables` (this commit): `report/sweeps/` (`summary.csv`, `summary_by_source.csv`, `summary_by_challenge.csv`, `baseline_nodes.csv`), this log and README.md. PLAN.md's commit 1 is skipped (correction 12).
+
+### Outputs and how to regenerate them
+
+Locked with `chmod -R a-w`: `/scratch/cmpe261-fa26/group4/results/p8/` (`sweep`, `baseline_node2`, `figures`; 27 GB). The figures (`tradeoff_latency_clip.png`, `peak_memory.png`, `comparison_grid.png`) are in `p8/figures/`, not committed (Phase 6's decision).
+
+On coe-hpc1, from the repo root, with `env/site.sh` sourced (about 15 s in all). `p8/` is locked, so to regenerate the figures, point `--out` elsewhere, such as `report/figures/sweeps`:
+
+```bash
+R=/scratch/cmpe261-fa26/group4/results
+python scripts/summarize.py --runs "$R/p8/sweep/*" --baseline $R/p8/sweep/baseline \
+    --csv report/sweeps/summary.csv --by source challenge --out $R/p8/figures \
+    --grid-runs baseline steps_10 ddim_20 dpmpp_20 euler_20 fp16 deepcache_i3 deepcache_i5 --grid-ids 0 1 2006 2012
+python scripts/summarize.py --runs $R/p8/sweep/baseline $R/p8/baseline_node2/baseline --baseline $R/p8/sweep/baseline \
+    --csv report/sweeps/baseline_nodes.csv --out $R/p8/figures/baseline_nodes --grid-runs baseline
+```
+
+The grid uses the pilot's grid prompts (COCO ids 0 and 1, PartiPrompts 2006 and 2012), with the runs as columns in the order given.
 
 ## Phase 7: Orchestration, R6 (2026-11-02)
 
@@ -576,6 +670,10 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - "Evaluate and summarize jobs" are one job: `evaluate.slurm` already summarizes.
     - The check ran `pilot.yaml`'s 5 runs instead of "2 runs × 4 prompts", so 5 tasks with a cap of 4 also tested the cap. With 4 prompts a task lasted 18–61 s, too short to cancel by hand, so the cancel was redone in a second output root with 16 prompts.
     - PROGRESS.md is updated by the last commit, `docs(hpc): Phase 7 results`, not by commit 3.
+14. **Phase 8, as done** (2026-11-04).
+    - The per-Challenge table is `report/sweeps/summary_by_challenge.csv`, `summarize.py --by`'s name (like Phase 6's `summary_by_source.csv`), not `per_challenge.csv`. A per-source table and `baseline_nodes.csv`, the two baselines side by side, are added.
+    - The figures aren't committed (Phase 6's decision); they're in `/scratch/cmpe261-fa26/group4/results/p8/figures/`.
+    - Results and this log are one commit, as in Phase 6.
 
 ## Decisions and versions
 
@@ -600,6 +698,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
 - **Sweep prompt set** (gate G2, Dan, 2026-11-02): all of `eval_prompts.jsonl`, 3,632 prompts.
 - **Starting noise** (Phase 6): one CPU generator per prompt, seeded with the prompt's seed; the noise is drawn in float32 and passed as `latents`, cast to the run's dtype. Runs before fe478dc (Phases 3–5, and job 99828) used CUDA generators, so their images don't match later ones. See Phase 6.
 - **Orchestration** (Phase 7): `submit_experiment.sh` submits experiment files as one Slurm job array of the unfinished runs, at most 4 at once, excluding cs001 and cs002, with the evaluation chained by `afterok` and `--kill-on-invalid-dep=yes`. A run is finished when its `perf.json` exists and its `config.yaml` matches; runs are staged on the node's SSD and copied with `perf.json` last.
+- **Sweep placement** (Phase 8, Dan, 2026-11-03): the whole sweep on one node (cs004), with a second-node baseline on cs003.
 - **Versions are unchanged** despite the CLIPScore incompatibility (Dan, 2026-10-19). An adapter is used instead of `transformers<5`.
 - **A100 driver:** 590.44.01 (CUDA ≤ 13.1), which supports the CUDA 12.4 wheels.
 

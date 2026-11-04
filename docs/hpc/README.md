@@ -54,12 +54,12 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 | 5 Measurement | trustworthy numbers: TF32 off, NFE, stage timings, CLIP/KID/FID/LPIPS | every summary column filled; runs deterministic | **pass** (jobs 98329–98332) |
 | 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | **pass** (jobs 100435–100548); the sweep runs on all 3,632 prompts |
 | 7 Orchestration | one command runs an experiment file and resumes after failures | a cancelled task reruns alone | **pass** (arrays 100683, 100689, 100695) |
-| 8 Full sweeps (G3) | each optimization alone, on the full prompt set | team confirms the combined settings | not started |
+| 8 Full sweeps (G3) | each optimization alone, on the full prompt set | team confirms the combined settings | **runs done** (arrays 101761, 101767); G3 waits on the team |
 | 9 Combined + FID | combined runs, leave-one-out ablation, FID | final summaries for the report | not started |
 
-## Where we are (2026-11-02)
+## Where we are (2026-11-04)
 
-- **Branches:** Phases 0–6 are merged into `main` (PRs #1–#9). Phase 7 is on `hpc/p7-orchestration`, branched from `hpc/p6-pilot` as PR #9 merged it, waiting to be pushed and reviewed.
+- **Branches:** Phases 0–7 are merged into `main` (PRs #1–#10). Phase 8 is on `hpc/p8-sweeps`, branched from `main` at 28b8378, waiting to be pushed and reviewed.
 - **Sweep size (gate G2, Dan, 2026-11-02):** all 3,632 prompts of `eval_prompts.jsonl`, the default in `configs/base.yaml`.
 - **Works now:**
   - the shared environment;
@@ -79,26 +79,32 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
   - **the sweep's cost:** `scripts/estimate_sweep.py` models every sweep run's time from the pilot, exact UNet call counts included, and predicts the pilot's held-out runs within 0.2 %;
   - each prompt's starting noise comes from its own CPU generator, drawn in float32, so a seed gives the same noise on any GPU and in FP16 and FP32 runs alike;
   - **one command per sweep (Phase 7, arrays 100683–100695):** `scripts/hpc/submit_experiment.sh` runs experiment files as a Slurm job array, 4 runs at once, and chains the evaluation. Run again after a failed or cancelled task, it redoes only the unfinished runs. Runs are staged on the node's SSD, so a run on `/scratch` with a `perf.json` is complete. See [DEVELOPMENT.md §3](DEVELOPMENT.md#3-running-jobs);
+  - **the sweep (Phase 8, arrays 101761 and 101767):** all 17 runs of `00`–`04` on all 3,632 prompts, on cs004, quality-scored and checked, plus a baseline on cs003. [report/sweeps/](../../report/sweeps/) has the tables, per source and per Challenge;
   - 155 unit tests, plus 3 `slow` ones run by hand.
 - **Watch out:**
   - **GPU 0 on cs002 is broken**: every 1-GPU job that lands there fails with "busy or unavailable". Submit GPU jobs with `sbatch --exclude=cs002 …` until the admins fix it.
   - **CUDA can't use cs001's GPUs 1–3.** A job that gets one fails at model load; resubmit it. Only GPU 0 worked in Phase 6. `submit_experiment.sh` excludes cs001 and cs002 by default.
-  - **Nodes differ by a few percent:** the same runs were 1.7–3.0 % faster on cs003 than on cs001's GPU 0 (Phase 7). Compare timings from the same node.
-- **Pilot results** (A100, FP32 with TF32 off, batch 1):
+  - **Nodes differ by up to a few percent:** the same runs were 1.7–3.0 % faster on cs003 than on cs001's GPU 0 (Phase 7), and 0.4 % slower on cs003 than on cs004 (Phase 8). Compare timings from the same node.
+- **Sweep results** (A100, TF32 off, all 3,632 prompts, one node; the full table is in [PROGRESS.md](PROGRESS.md#phase-8-full-sweeps-r7-and-d6-2026-11-03-to-2026-11-04)):
 
-  | Config | s/image | Speedup | Peak GB | CLIP ViT-g/14 | LPIPS to baseline |
+  | Config | s/image | Speedup | Peak GB | ΔCLIP ViT-g/14 [95 % CI] | LPIPS to baseline |
   |---|---|---|---|---|---|
-  | baseline (PNDM 50) | 5.775 | 1.00× | 4.76 | 30.46 | 0 |
-  | `ddim_20` | 2.340 | 2.47× | 4.76 | 30.47 | 0.346 |
-  | `dpmpp_20` | 2.344 | 2.46× | 4.76 | 30.57 | 0.255 |
-  | `deepcache_i3` | 2.357 | 2.45× | 4.97 | 30.56 | 0.259 |
-  | `fp16` | 1.468 | 3.93× | 2.61 | 30.45 | 0.012 |
+  | baseline (PNDM 50, FP32) | 5.816 | 1.00× | 4.76 | 0 (30.06) | 0 |
+  | `steps_10` (PNDM) | 1.329 | 4.38× | 4.76 | −2.37 [−2.53, −2.21] | 0.481 |
+  | `steps_20` (PNDM) | 2.448 | 2.38× | 4.76 | −0.31 [−0.42, −0.21] | 0.300 |
+  | `ddim_20` | 2.339 | 2.49× | 4.76 | +0.05 [−0.05, +0.16] | 0.336 |
+  | `dpmpp_20` | 2.343 | 2.48× | 4.76 | +0.13 [+0.04, +0.22] | 0.254 |
+  | `euler_20` | 2.342 | 2.48× | 4.76 | +0.11 [+0.02, +0.21] | 0.313 |
+  | `fp16` | 1.442 | 4.03× | 2.61 | −0.01 [−0.04, +0.01] | 0.016 |
+  | `fp16_bs4` | 0.999 | 5.82× | 4.02 | −0.00 [−0.03, +0.02] | 0.015 |
+  | `deepcache_i3` | 2.359 | 2.47× | 4.97 | +0.07 [−0.03, +0.16] | 0.255 |
+  | `deepcache_i5` | 1.748 | 3.33× | 4.97 | −0.04 [−0.15, +0.07] | 0.329 |
 
-  The CLIP Scores are all within 0.12 of each other, which is noise at 200 prompts. KID is read only from the sweeps.
+  Fewer PNDM steps lose quality; at 20 steps the other schedulers don't. FP16 changes nothing measurable, and DeepCache holds its CLIP Score up to interval 5.
 
 ## Next steps
 
-1. **Phase 8:** the sweep on all 3,632 prompts: the 17 runs of `00`–`04` as one array from `submit_experiment.sh`, plus a second-node baseline, about 65.5 GPU-hours, or 16.4 h on 4 GPUs. [PROGRESS.md](PROGRESS.md#phase-6-pilot-r5-and-d5-gate-g2-2026-10-30-to-2026-11-02) has the estimate, and [Phase 7's preview](PROGRESS.md#phase-8-preview-dry-run-on-coe-hpc1-2026-11-02) the dry run and the limits to set. Before submitting, Dan decides how to handle node speed and the duplicate `steps_20`/`pndm_20` run ([noted for Phase 8](PROGRESS.md#noted-for-phase-8-questions-for-dan-nothing-changed)).
+1. **Gate G3:** the team confirms the combined settings in `05_combined.yaml`, now FP16 + DPM-Solver++ 2M at 20 steps + DeepCache interval 3. [PROGRESS.md](PROGRESS.md#gate-g3-waiting-on-the-team) has what the sweep says about them and the alternatives.
 
 **After that:**
 - **Phase 9:** the combined runs (`05_combined` adds about 4.1 GPU-hours) and the final summaries.
