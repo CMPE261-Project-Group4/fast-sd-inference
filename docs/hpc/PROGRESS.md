@@ -63,9 +63,10 @@ The sweep is done and checked: each optimization alone, on all 3,632 prompts, on
 
 - **Each keeps quality on its own.** Against the baseline's ViT-g/14 CLIP Score, FP16 changes it by −0.01, DPM-Solver++ 20 by +0.13 and DeepCache interval 3 by +0.07. No 95 % interval falls below zero.
 - **The alternatives:**
-  - DeepCache interval 5 is 1.35× faster than interval 3, with no overall CLIP loss (−0.04, interval −0.15 to +0.07). But its images move further from the baseline's (LPIPS 0.33 against 0.25), and its Writing & Symbols prompts lose 1.38 points (91 prompts).
+  - DeepCache interval 5 is 1.35× faster than interval 3, with no overall CLIP loss (−0.04, interval −0.15 to +0.07). But its images move further from the baseline's (LPIPS 0.33 against 0.25), and its Writing & Symbols prompts lose 1.38 points (91 prompts), which isn't significant once the 176 Challenge comparisons are corrected for (q = 0.19).
   - DDIM and Euler at 20 steps take the same time as DPM-Solver++. DDIM has the lower KID (3.75 against 5.05 × 10⁻³) and the smaller CLIP gain (+0.05, interval −0.05 to +0.16).
   - Fewer steps were tested only with PNDM: 10 steps lose 2.37 points. DPM-Solver++ below 20 steps wasn't tested.
+- **The forecast** (`report/sweeps/forecast.csv`, the cost model refitted on the sweep): FP16 + DPM-Solver++ 20 + DeepCache interval 3 at 0.281 s/image, 20.7×; at batch 4, 0.195 s, 29.8×. With interval 5 instead, the same model gives 0.207 s (28.1×) and 0.144 s (40.5×).
 - Whichever is chosen, Phase 9's leave-one-out runs measure how the three combine.
 
 ### The sweep (array 101761, evaluation 101762) and the second-node baseline (array 101767, evaluation 101768)
@@ -79,7 +80,7 @@ scripts/hpc/submit_experiment.sh --output-root /scratch/cmpe261-fa26/group4/resu
 
 All 17 sweep runs ran on cs004, 4 at a time, and `check_run.py --expect-quality` passes all of them. Generation took 15.5 h (18:14 to 09:43) and the evaluation 1.8 h. Phase 8 used 64.3 GPU-hours, against 65.5 estimated.
 
-**Results** (`report/sweeps/summary.csv`; A100, TF32 off). ΔCLIP is the mean per-prompt change against the baseline's ViT-g/14 CLIP Score (30.06; ViT-L/14 26.78), with a paired 95 % interval (normal approximation, from each run's `quality_per_image.csv`). KID is against 2,000 COCO images, × 10⁻³, lower is better; its ± is the spread over 100 subsets of 1,000, not an interval of the mean.
+**Results** (`report/sweeps/summary.csv`; A100, TF32 off). ΔCLIP is the mean per-prompt change against the baseline's ViT-g/14 CLIP Score (30.06; ViT-L/14 26.78), with its paired t-test's 95 % interval (`report/sweeps/paired_quality.csv`, from each run's `quality_per_image.csv`). KID is against 2,000 COCO images, × 10⁻³, lower is better; its ± is the spread over 100 subsets of 1,000, not an interval of the mean.
 
 | Run | s/image | Speedup | Peak GB | `nfe` (`nfe_full`) | ΔCLIP ViT-g/14 [95 % CI] | ΔCLIP ViT-L/14 | KID × 10⁻³ | LPIPS to baseline |
 |---|---|---|---|---|---|---|---|---|
@@ -110,11 +111,11 @@ Stage coverage is 0.992–0.999. `steps_20` and `pndm_20` are the same config an
 - **Batching helps FP16 more than FP32.** Batch 4 is 1.44× faster per image in FP16 (1.442 to 0.999 s) but 1.20× in FP32 (5.816 to 4.827 s), with the same images (LPIPS 0.015 and 0.000005, as Phase 5 found for FP32). The estimate had assumed FP32's ratio for `fp16_bs4`, so it predicted 1.230 s.
 - **DeepCache holds its CLIP Score up to interval 5** (+0.18, +0.07, −0.04 at intervals 2, 3 and 5), while its images drift from the baseline's (LPIPS 0.23, 0.25, 0.33). A cached call still costs 9 % of a full one: interval 5 runs 11 full and 40 cached calls in 1.748 s.
 - **KID ranks the runs differently from CLIP.** DDIM 20, DeepCache and PNDM 20 have lower KID than the baseline (3.5–3.8 against 4.25 × 10⁻³); DPM-Solver++ and Euler higher (4.8–5.1), at both 20 and 50 steps. The gaps are 1.4–2.2 times the subset spread. Read them with care: KID uses only the 2,000 COCO prompts, with 2,000 reference images.
-- **Per-Challenge** (`report/sweeps/summary_by_challenge.csv`, PartiPrompts only; COCO prompts are `(none)`): 10 PNDM steps hurt every Challenge, most of all Properties & Positioning (−4.42, 35 prompts), Writing & Symbols (−4.36, 91) and Complex (−3.50, 113); least, Linguistic Structures (−0.92, 61). Writing & Symbols is also where DeepCache interval 5 loses most (−1.38). Groups are small, and these have no intervals yet.
+- **Per-Challenge** (`report/sweeps/summary_by_challenge.csv`, PartiPrompts only; COCO prompts are `(none)`): 10 PNDM steps hurt every Challenge, most of all Properties & Positioning (−4.42, 35 prompts), Writing & Symbols (−4.36, 91) and Complex (−3.50, 113); least, Linguistic Structures (−0.92, 61). With paired t-tests and Benjamini–Hochberg q-values over the 176 Challenge comparisons (`paired_quality.csv`), every 10-step loss is significant except Linguistic Structures' (q = 0.49), and only one other cell is: DDIM 20 on Basic prompts, −0.60 (−0.90 to −0.30, 272 prompts). DeepCache interval 5's −1.38 on Writing & Symbols isn't (q = 0.19).
 - **COCO and PartiPrompts agree** (`summary_by_source.csv`): every run's ΔCLIP is within 0.09 between the two sources, except `steps_30` (−0.16 on COCO, −0.03 on PartiPrompts).
 - **The baseline matches DeepCache's published 50-step PLMS CLIP Scores** (ViT-g/14): 30.33 on our 2,000 COCO prompts and 29.73 on all 1,632 PartiPrompts, against the paper's 30.30 and 29.51.
 - **Timing repeats across nodes and runs.** The second-node baseline ran at 5.842 s/image on cs003 against 5.816 on cs004 (+0.4 %, smaller than the 1.7–3.0 % Phase 7 saw against cs001), and made byte-identical images: 3,632 of 3,632 (`filecmp`, 15 s on coe-hpc1). `steps_20` and `pndm_20`, two tasks on different GPUs of cs004, are also byte-identical and 0.04 % apart.
-- **The cost model held.** Every run is within 1.8 % of its Phase 6 estimate (`report/pilot/sweep_estimate.csv`), 14 of 16 within 1.0 %, except `fp16_bs4` (above). The estimates were measured on cs001, the slower node. Evaluation took 0.108 s per image, against 0.15 estimated.
+- **The cost model held** (`report/sweeps/estimate_check.csv`). It predicted 11 of the 12 runs the pilot hadn't measured within 1.4 % (10 within 1.0 %); the 12th is `fp16_bs4` (above). The 5 runs the pilot measured repeated within 1.8 % of their pilot times, on another node. Refitted on the sweep (`cost_model.csv`): a full UNet call costs 0.1115 s in FP32 and 0.0271 s in FP16, a cached FP32 call 0.0098 s, and the rest of the pipeline 0.130 and 0.061 s. Evaluation took 0.108 s per image, against 0.15 estimated.
 - **Keeping the sweep on one node cost one GPU for about 3 hours.** From 00:13 to 03:16 another user's 1-GPU job held one of cs004's GPUs, so only 3 tasks ran. `sacct` doesn't show other users' jobs here; the prelude's node listing in each task's log does.
 - **`summarize.py`'s quality-vs-latency plot overlaps labels** where runs sit close together (the 20- and 50-step groups). The report's figures are made off-cluster.
 
@@ -126,7 +127,9 @@ Stage coverage is 0.992–0.999. `steps_20` and `pndm_20` are the same config an
 
 ### Commits
 
-- `results: sweep summaries and per-Challenge tables` (this commit): `report/sweeps/` (`summary.csv`, `summary_by_source.csv`, `summary_by_challenge.csv`, `baseline_nodes.csv`), this log and README.md. PLAN.md's commit 1 is skipped (correction 12).
+- `7fc2bd6 results: sweep summaries and per-Challenge tables`: `report/sweeps/` (`summary.csv`, `summary_by_source.csv`, `summary_by_challenge.csv`, `baseline_nodes.csv`), this log and README.md. PLAN.md's commit 1 is skipped (correction 12).
+- `0078991 feat(analysis): store paired quality statistics and the cost model's check and forecast`: `scripts/analyze_sweep.py`, with scipy's paired t-test and Benjamini–Hochberg q-values and `estimate_sweep.py`'s own cost model.
+- `results: paired statistics, cost-model check and forecast` (this commit): `report/sweeps/` (`paired_quality.csv`, `estimate_check.csv`, `cost_model.csv`, `forecast.csv`) and this log.
 
 ### Outputs and how to regenerate them
 
@@ -141,9 +144,14 @@ python scripts/summarize.py --runs "$R/p8/sweep/*" --baseline $R/p8/sweep/baseli
     --grid-runs baseline steps_10 ddim_20 dpmpp_20 euler_20 fp16 deepcache_i3 deepcache_i5 --grid-ids 0 1 2006 2012
 python scripts/summarize.py --runs $R/p8/sweep/baseline $R/p8/baseline_node2/baseline --baseline $R/p8/sweep/baseline \
     --csv report/sweeps/baseline_nodes.csv --out $R/p8/figures/baseline_nodes --grid-runs baseline
+python scripts/analyze_sweep.py --runs "$R/p8/sweep/*" --baseline $R/p8/sweep/baseline \
+    --out-dir report/sweeps --estimate report/pilot/sweep_estimate.csv \
+    --batch-pair $R/p8/sweep/fp16 $R/p8/sweep/fp16_bs4
 ```
 
-The grid uses the pilot's grid prompts (COCO ids 0 and 1, PartiPrompts 2006 and 2012), with the runs as columns in the order given.
+The grid uses the pilot's grid prompts (COCO ids 0 and 1, PartiPrompts 2006 and 2012), with the runs as columns in the order given. `analyze_sweep.py` takes about 20 s.
+
+**The analysis PDF** (2026-11-04), `results/sweep_results.pdf` in the clone (gitignored, like the pilot's), has 9 pages: findings, the full table, speed against quality, where the time goes, steps and schedulers, KID, per-Challenge changes, example images, the forecast and the limits. Every number in it comes from `report/sweeps/` or the locked runs. Its builder, like the pilot PDF's, uses reportlab outside the frozen venv and isn't in the repo.
 
 ## Phase 7: Orchestration, R6 (2026-11-02)
 

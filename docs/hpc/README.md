@@ -79,7 +79,7 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
   - **the sweep's cost:** `scripts/estimate_sweep.py` models every sweep run's time from the pilot, exact UNet call counts included, and predicts the pilot's held-out runs within 0.2 %;
   - each prompt's starting noise comes from its own CPU generator, drawn in float32, so a seed gives the same noise on any GPU and in FP16 and FP32 runs alike;
   - **one command per sweep (Phase 7, arrays 100683–100695):** `scripts/hpc/submit_experiment.sh` runs experiment files as a Slurm job array, 4 runs at once, and chains the evaluation. Run again after a failed or cancelled task, it redoes only the unfinished runs. Runs are staged on the node's SSD, so a run on `/scratch` with a `perf.json` is complete. See [DEVELOPMENT.md §3](DEVELOPMENT.md#3-running-jobs);
-  - **the sweep (Phase 8, arrays 101761 and 101767):** all 17 runs of `00`–`04` on all 3,632 prompts, on cs004, quality-scored and checked, plus a baseline on cs003. [report/sweeps/](../../report/sweeps/) has the tables, per source and per Challenge;
+  - **the sweep (Phase 8, arrays 101761 and 101767):** all 17 runs of `00`–`04` on all 3,632 prompts, on cs004, quality-scored and checked, plus a baseline on cs003. [report/sweeps/](../../report/sweeps/) has the tables, per source and per Challenge, with paired confidence intervals and q-values (`scripts/analyze_sweep.py`), the cost model's check and a forecast of the combinations;
   - 155 unit tests, plus 3 `slow` ones run by hand.
 - **Watch out:**
   - **GPU 0 on cs002 is broken**: every 1-GPU job that lands there fails with "busy or unavailable". Submit GPU jobs with `sbatch --exclude=cs002 …` until the admins fix it.
