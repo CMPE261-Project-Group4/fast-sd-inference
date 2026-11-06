@@ -1,0 +1,6 @@
+experiment,run,scheduler,steps,dtype,batch_size,deepcache_interval,nfe,nfe_full,s_per_image,speedup,basis
+05_combined,combined_all,dpmpp_2m,20,fp16,1,3.0,20,7,0.28137243061846845,20.67157336701893,model; fp16 cached calls scale like full ones
+05_combined,combined_no_fp16,dpmpp_2m,20,fp32,1,3.0,20,7,1.0384452847512686,5.6010758856488785,model
+05_combined,combined_no_scheduler,pndm,50,fp16,1,3.0,51,17,0.6022891879205299,9.657172932271816,model; fp16 cached calls scale like full ones
+05_combined,combined_no_deepcache,dpmpp_2m,20,fp16,1,,20,20,0.6024086989220481,9.655257059524567,model
+05_combined,combined_all_bs4,dpmpp_2m,20,fp16,4,3.0,20,7,0.19493672677282492,29.837429504828172,model; fp16 cached calls scale like full ones
