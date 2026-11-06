@@ -54,12 +54,13 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 | 5 Measurement | trustworthy numbers: TF32 off, NFE, stage timings, CLIP/KID/FID/LPIPS | every summary column filled; runs deterministic | **pass** (jobs 98329–98332) |
 | 6 Pilot (G2) | first results on 200 prompts | seconds per image and full-sweep GPU-hours reported; team picks the sweep size | **pass** (jobs 100435–100548); the sweep runs on all 3,632 prompts |
 | 7 Orchestration | one command runs an experiment file and resumes after failures | a cancelled task reruns alone | **pass** (arrays 100683, 100689, 100695) |
-| 8 Full sweeps (G3) | each optimization alone, on the full prompt set | team confirms the combined settings | **runs done** (arrays 101761, 101767); G3 waits on the team |
+| 8 Full sweeps | each optimization alone, on the full prompt set | all runs done and checked | **pass** (arrays 101761, 101767); gate G3 moved to its own phase |
+| Selection (G3) | analyze the single-technique results and choose the combinations to run | team confirms the combined settings | not started; to be planned |
 | 9 Combined + FID | combined runs, leave-one-out ablation, FID | final summaries for the report | not started |
 
-## Where we are (2026-11-04)
+## Where we are (2026-11-06)
 
-- **Branches:** Phases 0–7 are merged into `main` (PRs #1–#10). Phase 8 is on `hpc/p8-sweeps`, branched from `main` at 28b8378, waiting to be pushed and reviewed.
+- **Branches:** Phases 0–7 are merged into `main` (PRs #1–#10). Phase 8 is complete on `hpc/p8-sweeps`, branched from `main` at 28b8378, waiting to be pushed and reviewed.
 - **Sweep size (gate G2, Dan, 2026-11-02):** all 3,632 prompts of `eval_prompts.jsonl`, the default in `configs/base.yaml`.
 - **Works now:**
   - the shared environment;
@@ -80,7 +81,7 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
   - each prompt's starting noise comes from its own CPU generator, drawn in float32, so a seed gives the same noise on any GPU and in FP16 and FP32 runs alike;
   - **one command per sweep (Phase 7, arrays 100683–100695):** `scripts/hpc/submit_experiment.sh` runs experiment files as a Slurm job array, 4 runs at once, and chains the evaluation. Run again after a failed or cancelled task, it redoes only the unfinished runs. Runs are staged on the node's SSD, so a run on `/scratch` with a `perf.json` is complete. See [DEVELOPMENT.md §3](DEVELOPMENT.md#3-running-jobs);
   - **the sweep (Phase 8, arrays 101761 and 101767):** all 17 runs of `00`–`04` on all 3,632 prompts, on cs004, quality-scored and checked, plus a baseline on cs003. [report/sweeps/](../../report/sweeps/) has the tables, per source and per Challenge, with paired confidence intervals and q-values (`scripts/analyze_sweep.py`), the cost model's check and a forecast of the combinations;
-  - 155 unit tests, plus 3 `slow` ones run by hand.
+  - 159 unit tests, plus 3 `slow` ones run by hand.
 - **Watch out:**
   - **GPU 0 on cs002 is broken**: every 1-GPU job that lands there fails with "busy or unavailable". Submit GPU jobs with `sbatch --exclude=cs002 …` until the admins fix it.
   - **CUDA can't use cs001's GPUs 1–3.** A job that gets one fails at model load; resubmit it. Only GPU 0 worked in Phase 6. `submit_experiment.sh` excludes cs001 and cs002 by default.
@@ -104,7 +105,8 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 
 ## Next steps
 
-1. **Gate G3:** the team confirms the combined settings in `05_combined.yaml`, now FP16 + DPM-Solver++ 2M at 20 steps + DeepCache interval 3. [PROGRESS.md](PROGRESS.md#gate-g3-waiting-on-the-team) has what the sweep says about them and the alternatives.
+1. **Push `hpc/p8-sweeps` and open Phase 8's PR.**
+2. **Plan the selection phase (gate G3):** analyze the single-technique results to choose the combinations worth running; then the team confirms the settings for `05_combined.yaml`, now FP16 + DPM-Solver++ 2M at 20 steps + DeepCache interval 3. [PROGRESS.md](PROGRESS.md#what-the-sweep-says-for-gate-g3) has what the sweep says about them and the alternatives.
 
 **After that:**
 - **Phase 9:** the combined runs (`05_combined` adds about 4.1 GPU-hours) and the final summaries.
@@ -113,5 +115,5 @@ Each phase is one branch, `hpc/p<N>-<name>`, stacked on the one before. Each get
 
 | When | Decision |
 |---|---|
-| Gate G3 | The combined settings for `05_combined.yaml` |
+| Gate G3 (its own phase, before Phase 9) | The combined settings for `05_combined.yaml` |
 | Gate G4 | Whether to add 3,000 COCO prompts so FID can use 5,000 images |

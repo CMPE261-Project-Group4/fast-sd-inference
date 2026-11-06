@@ -18,7 +18,8 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 5 Measurement | `hpc/p5-measure` | summary filled, deterministic | **pass** (2026-10-29, jobs 98329–98332); approved by Dan (2026-10-30) |
 | 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | **pass** (2026-11-02, jobs 100435, 100436, 100547, 100548); the sweep runs on all 3,632 prompts (Dan, 2026-11-02) |
 | 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | **pass** (2026-11-02, arrays 100683, 100689 and 100695; evaluations 100684 and 100696) |
-| 8 Sweeps (G3) | `hpc/p8-sweeps` | Dan confirms combined settings | **runs done** (2026-11-04, arrays 101761 and 101767; evaluations 101762 and 101768); gate G3 waits on the team |
+| 8 Sweeps | `hpc/p8-sweeps` | each optimization alone, on all 3,632 prompts, checked | **pass** (2026-11-04, arrays 101761 and 101767; evaluations 101762 and 101768); gate G3 moved to its own phase (Dan, 2026-11-06, correction 15) |
+| Selection (G3) | not planned yet | team confirms the combined settings | not started |
 | 9 Combined + FID | `hpc/p9-combined` | final summaries | not started |
 
 ## Jobs
@@ -57,9 +58,13 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 
 ## Phase 8: Full sweeps, R7 and D6 (2026-11-03 to 2026-11-04)
 
-### Gate G3: waiting on the team
+### Gate: pass; gate G3 moves to its own phase
 
-The sweep is done and checked: each optimization alone, on all 3,632 prompts, on one node. Gate G3 is the team's choice of combined settings for `configs/experiments/05_combined.yaml`. What the sweep says about the settings there now, FP16 + DPM-Solver++ 2M at 20 steps + DeepCache interval 3:
+The sweep is done and checked: each optimization alone, on all 3,632 prompts, on one node (below). Gate G3, the team's choice of combined settings for `configs/experiments/05_combined.yaml`, is no longer this phase's gate (Dan, 2026-11-06, correction 15). It gets a phase of its own before Phase 9, which analyzes these single-technique results to choose the combinations worth running, rather than testing every possible configuration.
+
+### What the sweep says for gate G3
+
+About the settings in `05_combined.yaml` now, FP16 + DPM-Solver++ 2M at 20 steps + DeepCache interval 3:
 
 - **Each keeps quality on its own.** Against the baseline's ViT-g/14 CLIP Score, FP16 changes it by −0.01, DPM-Solver++ 20 by +0.13 and DeepCache interval 3 by +0.07. No 95 % interval falls below zero.
 - **The alternatives:**
@@ -124,12 +129,14 @@ Stage coverage is 0.992–0.999. `steps_20` and `pndm_20` are the same config an
 - **The whole sweep on one node** (Dan, 2026-11-03, as submitted): cs004, with `--exclude=cs001,cs002,cs003`, so no speedup mixes nodes; the second-node baseline on cs003 measures the node effect.
 - **`steps_20` and `pndm_20` both run** (Dan, 2026-11-03): their match measures run-to-run timing on one node.
 - **Limits:** 7 h per task (the baseline took 5h59m) and 3.5 h for the evaluation (it took 1h51m).
+- **Gate G3 moves to its own phase** (Dan, 2026-11-06): the combined settings are chosen after an analysis of these single-technique results, which picks the combinations worth running. Phase 8 closes on the sweep itself.
 
 ### Commits
 
 - `7fc2bd6 results: sweep summaries and per-Challenge tables`: `report/sweeps/` (`summary.csv`, `summary_by_source.csv`, `summary_by_challenge.csv`, `baseline_nodes.csv`), this log and README.md. PLAN.md's commit 1 is skipped (correction 12).
 - `0078991 feat(analysis): store paired quality statistics and the cost model's check and forecast`: `scripts/analyze_sweep.py`, with scipy's paired t-test and Benjamini–Hochberg q-values and `estimate_sweep.py`'s own cost model.
-- `results: paired statistics, cost-model check and forecast` (this commit): `report/sweeps/` (`paired_quality.csv`, `estimate_check.csv`, `cost_model.csv`, `forecast.csv`) and this log.
+- `0097c0a results: paired statistics, cost-model check and forecast`: `report/sweeps/` (`paired_quality.csv`, `estimate_check.csv`, `cost_model.csv`, `forecast.csv`) and this log.
+- `docs(hpc): close Phase 8 and move gate G3 to its own phase` (this commit): this log and README.md.
 
 ### Outputs and how to regenerate them
 
@@ -682,6 +689,7 @@ All of these are read-only: commands on coe-hpc1, `ssh coe-hpc3` queries (`sinfo
     - The per-Challenge table is `report/sweeps/summary_by_challenge.csv`, `summarize.py --by`'s name (like Phase 6's `summary_by_source.csv`), not `per_challenge.csv`. A per-source table and `baseline_nodes.csv`, the two baselines side by side, are added.
     - The figures aren't committed (Phase 6's decision); they're in `/scratch/cmpe261-fa26/group4/results/p8/figures/`.
     - Results and this log are one commit, as in Phase 6.
+15. **Gate G3 is no longer Phase 8's gate** (Dan, 2026-11-06). Phase 8 ends when its sweep is done and checked. Choosing the combined settings becomes its own phase before Phase 9: the single-technique results are analyzed first, to choose the combinations worth running. Its scope, branch and commits are still to be planned. Phase 9's commit 1, `exp: set combined settings from gate G3`, waits for it.
 
 ## Decisions and versions
 
