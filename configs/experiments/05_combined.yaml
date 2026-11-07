@@ -1,26 +1,73 @@
-# Combined optimizations + leave-one-out ablation.
-# TODO: update scheduler / steps / interval after reviewing results of 01-04.
+# Combined optimizations: a 2^3 factorial over the three independent axes, plus extensions.
+#
+# The 17 single-technique runs fall into 4 groups, but steps (01) and schedulers (02) are one
+# axis, the sampler: at 20 steps the scheduler decides quality, and every PNDM step cut loses
+# CLIP (Phase 8). So the axes are:
+#   S  sampler    PNDM 50  ->  DPM-Solver++ 2M, 20 steps   (+0.13 CLIP, 2.48x on A100)
+#   P  precision  FP32     ->  FP16                        (-0.01 CLIP, 4.03x)
+#   D  DeepCache  off      ->  interval 3                  (+0.07 CLIP, 2.47x)
+# The 8 core runs are every on/off combination: the reference, the 3 singles, the 3 pairs
+# (= leave-one-out of combined_all) and all three. Each pair and the triple can then be read
+# against the product of its singles' speedups and the sum of their quality changes, which
+# shows where two techniques interact (e.g. DeepCache skips a larger share of a 20-step
+# trajectory than of a 50-step one).
+#
+# The reference and singles repeat Phase 8 settings so that every speedup in this file is
+# measured on the same GPU. On the A100 cluster they already exist (report/sweeps); there,
+# run only the combined_* runs with --only.
 base: configs/base.yaml
 runs:
-  - name: combined_all
+  # --- core 2^3 factorial (batch 1, latency) ---
+  - name: ref_baseline                 # ---  PNDM 50, FP32 (base.yaml as-is)
+  - name: only_fp16                    # P
+    dtype: fp16
+  - name: only_dpmpp20                 # S
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+  - name: only_deepcache_i3            # D
+    deepcache: {enabled: true, cache_interval: 3}
+  - name: combined_no_deepcache        # P+S
+    dtype: fp16
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+  - name: combined_no_scheduler        # P+D (PNDM 50)
+    dtype: fp16
+    deepcache: {enabled: true, cache_interval: 3}
+  - name: combined_no_fp16             # S+D
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+    deepcache: {enabled: true, cache_interval: 3}
+  - name: combined_all                 # P+S+D
     dtype: fp16
     scheduler: dpmpp_2m
     num_inference_steps: 20
     deepcache: {enabled: true, cache_interval: 3}
-  - name: combined_no_fp16
-    scheduler: dpmpp_2m
-    num_inference_steps: 20
-    deepcache: {enabled: true, cache_interval: 3}
-  - name: combined_no_scheduler        # default scheduler, 50 steps
-    dtype: fp16
-    deepcache: {enabled: true, cache_interval: 3}
-  - name: combined_no_deepcache
-    dtype: fp16
-    scheduler: dpmpp_2m
-    num_inference_steps: 20
-  - name: combined_all_bs4
+
+  # --- extensions of combined_all ---
+  - name: combined_all_bs4             # throughput: batching helped FP16 1.44x in Phase 8;
+                                       # it keeps the images (LPIPS 0.015), so it applies to
+                                       # whichever combined_all variant wins
     dtype: fp16
     scheduler: dpmpp_2m
     num_inference_steps: 20
     deepcache: {enabled: true, cache_interval: 3}
     batch_size: 4
+  # On the 4090 pilot (200 prompts), DPM-Solver++ 20 + DeepCache i3 lost CLIP together
+  # (-0.20 to -0.23, LPIPS 0.43) though each gained alone: at 20 steps i3 leaves only 7 full
+  # UNet calls. Interval 5 (4 full calls) lost 1.06 [-1.65, -0.47], so it is dropped. These
+  # two buy back full calls, 10 each, one with a shorter interval, one with more steps.
+  - name: combined_all_i2              # 20 steps, a full call every 2nd step
+    dtype: fp16
+    scheduler: dpmpp_2m
+    num_inference_steps: 20
+    deepcache: {enabled: true, cache_interval: 2}
+  - name: combined_all_s30             # 30 steps, i3
+    dtype: fp16
+    scheduler: dpmpp_2m
+    num_inference_steps: 30
+    deepcache: {enabled: true, cache_interval: 3}
+  - name: combined_all_ddim            # DDIM 20 had the lower KID (3.75 vs 5.05 x 1e-3)
+    dtype: fp16
+    scheduler: ddim
+    num_inference_steps: 20
+    deepcache: {enabled: true, cache_interval: 3}

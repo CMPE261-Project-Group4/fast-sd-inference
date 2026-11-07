@@ -19,7 +19,7 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 6 Pilot (G2) | `hpc/p6-pilot` | s/image + sweep GPU-hours reported | **pass** (2026-11-02, jobs 100435, 100436, 100547, 100548); the sweep runs on all 3,632 prompts (Dan, 2026-11-02) |
 | 7 Orchestration | `hpc/p7-orchestration` | one command, resumable | **pass** (2026-11-02, arrays 100683, 100689 and 100695; evaluations 100684 and 100696) |
 | 8 Sweeps | `hpc/p8-sweeps` | each optimization alone, on all 3,632 prompts, checked | **pass** (2026-11-04, arrays 101761 and 101767; evaluations 101762 and 101768); gate G3 moved to its own phase (Dan, 2026-11-06, correction 15) |
-| Selection (G3) | not planned yet | team confirms the combined settings | not started |
+| Selection (G3) | `local/4090-combined` | team confirms the combined settings | **data in** (2026-11-07): `05_combined` on a local RTX 4090, all 3,632 prompts ([below](#selection-g3-data-05_combined-on-a-local-rtx-4090-2026-11-06-to-2026-11-07)); the team's choice is pending |
 | 9 Combined + FID | `hpc/p9-combined` | final summaries | not started |
 
 ## Jobs
@@ -55,6 +55,104 @@ The plan is [PLAN.md](PLAN.md), the brief saved as-is. Where this log's
 | 2026-11-04 | 101762 | P8.2 its evaluation: `evaluate.slurm p8/sweep p8/sweep/baseline`, `afterok:101761`, `--kill-on-invalid-dep=yes` (3.5 h) | cs004 | COMPLETED 0:0 in 1h50m45s, MaxRSS 6.1 GB; `check_run.py --expect-quality` passes all 17; `p8/sweep/summary/` written |
 | 2026-11-03 | 101767 | P8.3 the second-node baseline: `submit_experiment.sh … 00_baseline.yaml -- --only baseline` into `p8/baseline_node2`, array `0%4` (7 h, `--exclude=cs001,cs002,cs004`), from 28b8378 | cs003, GPU 2 | COMPLETED 0:0 in 5h59m48s, MaxRSS 1.8 GB; 5.842 s/image against the sweep baseline's 5.816 on cs004, and every image byte-identical to it. Another user's 2 A100 jobs shared the node |
 | 2026-11-04 | 101768 | P8.4 its evaluation, `afterok:101767` (30 min) | cs003 | COMPLETED 0:0 in 7m42s, MaxRSS 2.1 GB; `check_run.py --expect-quality` passes |
+
+## Selection (G3) data: `05_combined` on a local RTX 4090 (2026-11-06 to 2026-11-07)
+
+Not a cluster run: Ruixiang ran it on a workstation's RTX 4090 (24 GB, Windows 11, driver 616.56), so it has no job IDs. Every speedup below is against a baseline measured on the same GPU; don't mix them with Phase 8's A100 speedups (see [4090 against A100](#4090-against-a100)).
+
+### What it says for gate G3
+
+- **DPM-Solver++ 20 and DeepCache i3 interact.** Each keeps quality alone (+0.13 [+0.04, +0.22] and +0.06 [−0.03, +0.16]), and FP16 combines with either at no cost. Together they lose: −0.23 [−0.35, −0.10] in FP32, −0.22 [−0.34, −0.09] with FP16 too (`combined_all`), and `combined_all` scores 0.35 [+0.23, +0.46] below FP16 + DPM-Solver++ 20 without DeepCache. At 20 steps, interval 3 leaves 7 full UNet calls.
+- **Ten full calls restore it.** Interval 2 at 20 steps (`combined_all_i2`) and interval 3 at 30 steps (`combined_all_s30`) score −0.02 [−0.13, +0.09] and +0.02 [−0.09, +0.13] against the baseline, and 0.20 [+0.10, +0.30] and 0.24 [+0.14, +0.34] above `combined_all`.
+- **The candidates:**
+
+  | Settings | Speedup (4090) | ΔCLIP ViT-g/14 [95 % CI] |
+  |---|---|---|
+  | FP16 + DPM-Solver++ 20 + DeepCache i3 (`05_combined.yaml` before this) | 11.23×, batch 4 18.67× | −0.22 [−0.34, −0.09] |
+  | FP16 + DPM-Solver++ 20 + DeepCache i2 | 8.82× | −0.02 [−0.13, +0.09] |
+  | FP16 + DPM-Solver++ 30 + DeepCache i3 | 8.25× | +0.02 [−0.09, +0.13] |
+  | FP16 + DPM-Solver++ 20, no DeepCache | 5.59× | +0.13 [+0.04, +0.22] |
+
+  Interval 2 at batch 4 wasn't run.
+- **DDIM 20 has the lowest KID and the lowest CLIP Score** (3.45 × 10⁻³ and −0.29 [−0.42, −0.16] in `combined_all_ddim`): the two metrics rank the samplers in opposite orders, as in Phase 8.
+
+### The runs
+
+From commit `0ddae21` (`exp: 2^3 factorial for the combined runs`) with a clean tree; every `perf.json` has `git_dirty: false` and both TF32 flags off. `05_combined.yaml` is a 2³ factorial over sampler (PNDM 50 → DPM-Solver++ 2M 20), precision (FP32 → FP16) and DeepCache (off → i3), plus four extensions of `combined_all`. Steps and schedulers count as one axis, the sampler: Phase 8 found that at 20 steps the scheduler decides the quality.
+
+- **Pilot** (200 prompts, `pilot.jsonl`, 2026-11-06): DeepCache interval 5 on top of DPM-Solver++ 20 lost 1.06 [−1.65, −0.47], so `combined_all_i5` and `combined_all_i5_bs4` were replaced by `combined_all_i2` and `combined_all_s30`.
+- **Full run:** 12 runs, generation 16:47–04:52 (12h05m), evaluation 40 min. `combined_all`, `combined_all_ddim` and `combined_all_i2` were run again on 2026-11-07 (see the timing check below); the first attempt is in `results/local_full_attempt1/`. Both attempts made byte-identical images, 3,632 of 3,632 per run (`filecmp`), so the quality numbers are the same, and the per-image times agree within 0.5–2.8 %.
+
+**Results** (`report/local4090/summary.csv`, `paired_quality.csv`; ΔCLIP as in Phase 8, against this baseline).
+
+| Run | s/image | Speedup | Peak GB | `nfe` (`nfe_full`) | ΔCLIP ViT-g/14 [95 % CI] | ΔCLIP ViT-L/14 | KID × 10⁻³ | LPIPS to baseline |
+|---|---|---|---|---|---|---|---|---|
+| `ref_baseline`: PNDM 50, FP32 | 3.572 | 1.00× | 4.76 | 51 (51) | 0 (30.06) | 0 (26.78) | 4.25 ± 0.37 | 0 |
+| `only_fp16` | 1.611 | 2.22× | 2.61 | 51 (51) | −0.01 [−0.03, +0.01] | −0.01 | 4.23 ± 0.37 | 0.016 |
+| `only_dpmpp20` | 1.376 | 2.60× | 4.76 | 20 (20) | **+0.13** [+0.04, +0.22] | +0.04 | 5.05 ± 0.35 | 0.254 |
+| `only_deepcache_i3` | 1.480 | 2.41× | 4.97 | 51 (17) | +0.06 [−0.03, +0.16] | +0.08 | 3.61 ± 0.38 | 0.255 |
+| `combined_no_deepcache`: FP16 + DPM 20 | 0.640 | 5.59× | 2.61 | 20 (20) | **+0.13** [+0.04, +0.22] | +0.04 | 5.04 ± 0.35 | 0.254 |
+| `combined_no_scheduler`: FP16 + i3 | 0.731 | 4.88× | 2.72 | 51 (17) | +0.07 [−0.03, +0.16] | +0.08 | 3.57 ± 0.38 | 0.255 |
+| `combined_no_fp16`: DPM 20 + i3 | 0.632 | 5.65× | 4.97 | 20 (7) | **−0.23** [−0.35, −0.10] | −0.05 | 4.26 ± 0.32 | 0.428 |
+| `combined_all` | 0.320 | 11.17× | 2.72 | 20 (7) | **−0.22** [−0.34, −0.09] | −0.04 | 4.31 ± 0.33 | 0.428 |
+| `combined_all_bs4` | 0.191 | 18.67× | 4.45 | 20 (7) | **−0.23** [−0.35, −0.10] | −0.05 | 4.27 ± 0.32 | 0.428 |
+| `combined_all_i2` | 0.405 | 8.82× | 2.72 | 20 (10) | −0.02 [−0.13, +0.09] | +0.03 | 4.81 ± 0.36 | 0.358 |
+| `combined_all_s30` | 0.433 | 8.25× | 2.72 | 30 (10) | +0.02 [−0.09, +0.13] | +0.04 | 4.64 ± 0.37 | 0.358 |
+| `combined_all_ddim` | 0.329 | 10.85× | 2.72 | 20 (7) | **−0.29** [−0.42, −0.16] | −0.04 | 3.45 ± 0.31 | 0.451 |
+
+`combined_all`, `combined_all_ddim` and `combined_all_i2` show the rerun's times; the first attempt's were 0.318, 0.320 and 0.398 s (11.23×, 11.15×, 8.97×).
+
+### Findings
+
+- **The interaction is in DeepCache's share of the trajectory, not in FP16.** Each pair with FP16 matches its single (FP16 + DPM 20: +0.13, as DPM 20; FP16 + i3: +0.07, as i3), and LPIPS rises to 0.43 only where DPM 20 and i3 meet.
+- **By source** (`summary_by_source.csv`, `paired_quality.csv`): `combined_all` loses −0.28 [−0.43, −0.12] on COCO (q = 0.005) and −0.14 [−0.34, +0.06] on PartiPrompts; `combined_all_i2` and `combined_all_s30` are within ±0.11 of zero on both.
+- **By Challenge:** no cell is significant once the 121 Challenge comparisons are corrected for. The largest change is Writing & Symbols (91 prompts): −1.49 for `combined_all` (q = 0.13), −0.63 for `combined_all_i2` and −0.54 for `combined_all_s30`.
+- **The speedups don't multiply:** the singles' 2.22 × 2.60 × 2.41 = 13.9×, measured 11.2×, because the text encoder, the VAE and the per-step overhead don't shrink with the UNet (stage coverage falls from 0.996 to 0.968).
+- **Batch 4 changes the speed only:** `combined_all_bs4` against `combined_all` is −0.01 [−0.03, +0.01] CLIP, 1.67× faster per image.
+- **The baseline reproduces Phase 8's quality on another GPU:** ViT-g/14 30.06, ViT-L/14 26.78 and KID 4.25 × 10⁻³, as on the A100.
+
+### 4090 against A100
+
+At batch 1, from Phase 8 (A100, all prompts) and this run:
+
+| Run | A100 s/image | 4090 s/image | Faster |
+|---|---|---|---|
+| baseline: PNDM 50, FP32 | 5.816 | 3.572 | 4090, 1.63× |
+| DPM-Solver++ 20, FP32 | 2.343 | 1.376 | 4090, 1.70× |
+| DeepCache i3, FP32 | 2.359 | 1.480 | 4090, 1.59× |
+| FP16 | 1.442 | 1.611 | A100, 1.12× |
+
+With TF32 off, FP32 runs on the CUDA cores, where the 4090 is faster; FP16 runs on the tensor cores, where the A100 is. So the same technique gives a different speedup on each GPU (FP16: 4.03× on the A100, 2.22× here), mostly through the FP32 baseline.
+
+### The timing check: accepted (Ruixiang, 2026-11-07)
+
+`check_run.py --expect-quality` passes 10 of the 12 runs. `combined_all_ddim` and `combined_all_i2` each have one row of 3,632 with stage coverage below 0.9: row 4, at 0.822 and 0.862 (`combined_all` failed the same way in its first attempt, row 5 at 0.846, and passed on the rerun).
+
+- **It's a one-off pause at the start, outside the GPU stages.** The low row is always among the first six timed rows (rows 0–5, in every run that has one); the rest of each run stays above 0.93. The row has 50–60 ms that none of the text, UNet and VAE timers see, so the pause is on the CPU side. Its cause isn't known.
+- **Only the fastest runs fail,** because 50 ms is 15 % of a 0.32–0.40 s image; slower runs have their lowest rows above 0.9.
+- **A rerun doesn't remove it:** the reruns moved it from row 5 to row 4.
+- **It doesn't change the results:** one image moves the mean per-image time by under 0.02 %, and the images and quality numbers are unaffected.
+- **Not done:** more warm-up batches (`warmup_batches: 2` → about 10) would move the pause out of the timed rows, but would change every run's config, so all 12 runs would need to be redone (about 13 h), and Phase 8's A100 runs used 2.
+
+### Commits
+
+- `0ddae21 exp: 2^3 factorial for the combined runs`: `configs/experiments/05_combined.yaml`.
+- `results: 4090 combined runs for gate G3` (this commit): `report/local4090/` and this log.
+
+### Outputs and how to regenerate them
+
+Runs in `results/local_full/` on the workstation (gitignored, 12 runs); the first attempt of the three reruns in `results/local_full_attempt1/`; the 200-prompt pilot in `results/local_pilot/`; figures (`tradeoff_latency_clip.png`, `peak_memory.png`, `comparison_grid.png`) in `results/local_full_summary/`, not committed.
+
+The environment is a project venv (`.venv`) built from `requirements.lock` with the CUDA 12.4 build of torch 2.6.0 (`--index-url https://download.pytorch.org/whl/cu124`) in place of the lock's Linux-only `nvidia-*` and `triton` wheels; it matches the lock otherwise, plus Windows' `colorama`. Assets come from `scripts/hpc/prefetch_assets.py` and COCO val2017 from images.cocodataset.org (sha256 as in `data/CHECKSUMS.txt`), all under `D:\eldm_cache`. In Git Bash, from the repo root, with `HF_HOME`, `TORCH_HOME` and `ELDM_DATASETS` pointing there and the offline variables of `env/site.sh` set:
+
+```bash
+python scripts/run_experiments.py configs/experiments/05_combined.yaml --output-root results/local_full --skip-existing
+python scripts/evaluate_quality.py --device cuda --runs results/local_full/* --baseline results/local_full/ref_baseline
+python scripts/summarize.py --runs "results/local_full/*" --baseline results/local_full/ref_baseline \
+    --csv report/local4090/summary.csv --by source challenge --out results/local_full_summary \
+    --grid-runs ref_baseline only_dpmpp20 only_deepcache_i3 combined_all combined_all_i2 combined_all_s30 combined_all_ddim --grid-ids 0 1 2006 2012
+python scripts/analyze_sweep.py --runs "results/local_full/*" --baseline results/local_full/ref_baseline --out-dir report/local4090
+```
 
 ## Phase 8: Full sweeps, R7 and D6 (2026-11-03 to 2026-11-04)
 
