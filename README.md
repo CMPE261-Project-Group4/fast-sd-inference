@@ -34,6 +34,7 @@ fast-sd-inference/
 │   ├── README.md                 # how the set was built, counts, checksums
 │   └── manual_prompts.yaml       # hand-written smoke-test prompts (not evaluated)
 ├── docs/hpc/                     # SJSU HPC guide: overview, development guide, plan, progress log
+├── docs/related_work.md          # literature notes for the report's background section
 ├── env/                          # HPC environment: portable Python pin, site.sh
 ├── src/eldm/                     # importable package
 │   ├── assets.py                 # pinned models + metric weights (offline HPC loading)
@@ -48,6 +49,8 @@ fast-sd-inference/
 │   ├── run_experiments.py        # run every run in an experiment file
 │   ├── evaluate_quality.py       # compute quality metrics for generated images
 │   ├── summarize.py              # aggregate into results/summary.csv + plots + image grids
+│   ├── plot_report_figures.py    # report figures from the committed tables under report/
+│   ├── factorial_effects.py      # effects + interactions of the 2^3 combined factorial
 │   └── hpc/                      # SJSU HPC: environment, assets, datasets, check jobs (docs/hpc/)
 ├── tests/                        # fast CPU-only unit tests
 ├── notebooks/                    # exploration only — final numbers come from scripts/
@@ -156,6 +159,45 @@ Produces `results/summary.csv` (`--csv` to put it elsewhere): one row per run wi
 speedup over `--baseline`, throughput, memory, NFE, stage times, the quality metrics, node and GPU.
 Plus latency-vs-CLIP and memory plots, and side-by-side image grids.
 
+### 5. Report figures and factorial analysis (Haoran)
+
+Both scripts read only the committed tables under `report/`, so they run on a laptop without a GPU or `results/`:
+
+```bash
+python scripts/plot_report_figures.py   # report/figures/fig1_single_techniques.png, fig2_combined.png
+python scripts/factorial_effects.py     # report/local4090/factorial_effects.csv, speedup_product_check.csv
+```
+
+The figures are not committed (see Git conventions); the current versions are in the team's Google Drive folder.
+
+---
+
+## Results so far
+
+Full tables: `report/sweeps/` (A100, each technique alone) and `report/local4090/` (RTX 4090, combinations);
+the detailed log with job IDs is [docs/hpc/PROGRESS.md](docs/hpc/PROGRESS.md). All runs use the 3,632 frozen prompts.
+ΔCLIP is the mean per-prompt change in ViT-g/14 CLIP Score against the baseline on the same GPU, with its paired 95 % interval.
+
+| Settings | GPU | Speedup | ΔCLIP [95 % CI] |
+|---|---|---|---|
+| FP16 | A100 | 4.03× | −0.01 [−0.04, +0.01] |
+| DPM-Solver++ 20 steps | A100 | 2.48× | +0.13 [+0.04, +0.22] |
+| DeepCache interval 3 | A100 | 2.47× | +0.07 [−0.03, +0.16] |
+| PNDM 20 steps | A100 | 2.38× | −0.31 [−0.42, −0.21] |
+| FP16 + DPM-Solver++ 20 | 4090 | 5.59× | +0.13 [+0.04, +0.22] |
+| FP16 + DPM-Solver++ 20 + DeepCache i2 | 4090 | 8.83× | −0.02 [−0.13, +0.09] |
+| FP16 + DPM-Solver++ 20 + DeepCache i3 | 4090 | 11.17× | −0.22 [−0.34, −0.09] |
+| … the same at batch 4 | 4090 | 18.67× | −0.23 [−0.35, −0.10] |
+
+- At 20 steps the sampler decides quality: PNDM loses, DDIM / DPM-Solver++ / Euler don't.
+- In the 2³ factorial the only sizeable interaction is DPM-Solver++ 20 × DeepCache i3 on CLIP (−0.21):
+  together they leave 7 full UNet calls. Keeping 10 (interval 2, or 30 steps) removes the loss.
+- Speedups don't multiply: the full combination reaches 80 % of the product of its singles,
+  because the text encoder, VAE and per-step overhead don't shrink.
+- Don't compare speedups across GPUs: FP16 gives 4.03× on the A100 but 2.22× on the 4090.
+
+Background notes for the report: [docs/related_work.md](docs/related_work.md).
+
 ---
 
 ## Experiment matrix
@@ -189,10 +231,13 @@ Add a new run by appending an entry to the relevant `runs:` list — only list t
 
 - `main` stays runnable. Work on short branches: `feat/deepcache`, `eval/fid`, `report/draft-1`.
 - Open a PR and get one teammate's review before merging.
-- Don't commit images, checkpoints or `results/` (see `.gitignore`); share them via Google Drive / HPC paths.
+- Don't commit images, checkpoints or `results/` (see `.gitignore`); share them via [Google Drive](https://drive.google.com/drive/folders/1ZKumcjMlaab5vK-XfAzv53m8jytW0ufZ) / HPC paths.
 
 ## References
 
 1. Rombach et al., *High-Resolution Image Synthesis with Latent Diffusion Models*, CVPR 2022.
 2. Song et al., *Denoising Diffusion Implicit Models*, ICLR 2021.
-3. Ma et al., *DeepCache: Accelerating Diffusion Models for Free*, 2023.
+3. Ma et al., *DeepCache: Accelerating Diffusion Models for Free*, CVPR 2024.
+4. Lu et al., *DPM-Solver++: Fast Solver for Guided Sampling of Diffusion Probabilistic Models*, arXiv:2211.01095, 2022.
+
+More in [docs/related_work.md](docs/related_work.md).
